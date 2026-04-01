@@ -1,0 +1,60 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Ã¦ÂÂ°Ã¦ÂÂ®Ã§ÂÂÃ¦ÂÂÃ¥ÂÂ¨Ã¦ÂÂÃ¥Â?Ã¨ÂÂªÃ¥ÂÂ¨Ã§ÂÂÃ¦ÂÂÃ¦Â¨Â¡Ã¦ÂÂÃ¨Â®Â¢Ã¥ÂÂÃ£ÂÂÃ¨Â½Â¦Ã¨Â¾ÂÃ¨Â½Â¨Ã¨Â¿Â¹Ã§Â­ÂÃ¥Â®ÂÃ¦ÂÂ¶Ã¦ÂÂ°Ã¦ÂÂ®
+"""
+
+import random
+import threading
+import time
+from datetime import datetime
+from typing import List, Dict, Optional
+from dataclasses import dataclass
+from app.models import db
+from app.models import Order, Node, Vehicle, Route
+
+
+@dataclass
+class VehicleLocation:
+    """Ã¨Â½Â¦Ã¨Â¾ÂÃ¤Â½ÂÃ§Â½Â®Ã¦ÂÂ°Ã¦ÂÂ®"""
+    vehicle_id: int
+    plate_number: str
+    latitude: float
+    longitude: float
+    speed: float
+    heading: float
+    status: str
+    timestamp: str
+
+
+@dataclass
+class NewOrderEvent:
+    """Ã¦ÂÂ°Ã¨Â®Â¢Ã¥ÂÂÃ¤ÂºÂÃ¤Â»?""
+    order_id: int
+    order_number: str
+    customer_name: str
+    cargo_name: str
+    priority: str
+    status: str
+    timestamp: str
+
+
+class DataGenerator:
+    """Ã¦ÂÂ°Ã¦ÂÂ®Ã§ÂÂÃ¦ÂÂÃ¥Â?""
+    
+    # Ã¥Â®Â¢Ã¦ÂÂ·Ã¦ÂÂ°Ã¦ÂÂ®
+    CUSTOMERS = ['Ã¥Â¼Â Ã¤Â¸Â', 'Ã¦ÂÂÃ¥ÂÂ', 'Ã§ÂÂÃ¤ÂºÂ', 'Ã¨ÂµÂµÃ¥ÂÂ­', 'Ã©ÂÂ±Ã¤Â¸Â', 'Ã¥Â­ÂÃ¥ÂÂ«', 'Ã¥ÂÂ¨Ã¤Â¹Â', 'Ã¥ÂÂ´Ã¥ÂÂ', 
+                 'Ã©ÂÂÃ¥ÂÂÃ¤Â¸Â', 'Ã§ÂÂÃ¥ÂÂÃ¤Âº?, 'Ã¥ÂÂ¯Ã¥ÂÂÃ¤Â¸?, 'Ã©ÂÂÃ¥ÂÂÃ¥Â?, 'Ã¨Â¤ÂÃ¥ÂÂÃ¤Âº?, 'Ã¥ÂÂ«Ã¥ÂÂÃ¥Â?]
+    
+    # Ã¨Â´Â§Ã§ÂÂ©Ã¦ÂÂ°Ã¦ÂÂ®
+    CARGOS = ['Ã§ÂÂµÃ¥Â­ÂÃ¤ÂºÂ§Ã¥ÂÂ', 'Ã¦ÂÂÃ¨Â£ÂÃ©ÂÂÃ¥Â¸Â½', 'Ã©Â£ÂÃ¥ÂÂÃ©Â¥Â®Ã¦ÂÂ', 'Ã¥Â®Â¶Ã¥ÂÂ·Ã¥Â®Â¶Ã§ÂÂµ', 'Ã¦ÂÂºÃ¦Â¢Â°Ã©ÂÂÃ¤Â»Â¶', 
+              'Ã¦ÂÂ¥Ã§ÂÂ¨Ã¥Â?, 'Ã¥Â»ÂºÃ¦ÂÂÃ¨Â£ÂÃ©Â¥Â°', 'Ã¥ÂÂÃ¥Â·Â¥Ã¥ÂÂÃ¦ÂÂ', 'Ã¥ÂÂ»Ã¨ÂÂ¯Ã§ÂÂ¨Ã¥ÂÂ', 'Ã¦Â±Â½Ã¨Â½Â¦Ã©ÂÂ¶Ã¤Â»Â¶',
+              'Ã¥ÂÂÃ¥ÂÂ¬Ã§ÂÂ¨Ã¥ÂÂ', 'Ã¤Â½ÂÃ¨ÂÂ²Ã¥ÂÂ¨Ã¦ÂÂ', 'Ã§ÂÂ©Ã¥ÂÂ·Ã§Â¤Â¼Ã¥ÂÂ', 'Ã¥ÂÂÃ¤ÂºÂ§Ã¥Â?, 'Ã§ÂºÂºÃ§Â»ÂÃ¥Â?]
+    
+    # Ã¤Â¼ÂÃ¥ÂÂÃ§ÂºÂ§Ã¦ÂÂÃ©Â?    PRIORITIES = ['normal'] * 7 + ['express'] * 2 + ['urgent']
+    
+    # Ã§ÂÂ¶Ã¦ÂÂÃ¦ÂµÂÃ¨Â½?    STATUS_FLOW = ['pending', 'assigned', 'in_transit', 'delivered']
+    
+    def __init__(self):
+        self._running = False
+  

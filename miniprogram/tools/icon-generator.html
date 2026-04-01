@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小程序图标生成器</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 { color: #409EFF; }
+    .icons-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin: 20px 0;
+    }
+    .icon-card {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .icon-card canvas {
+      border: 1px solid #eee;
+      border-radius: 8px;
+    }
+    .icon-card p {
+      margin: 10px 0 0;
+      font-size: 14px;
+      color: #666;
+    }
+    .btn {
+      background: #409EFF;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 5px;
+      font-size: 14px;
+    }
+    .btn:hover { background: #66b1ff; }
+    .btn-success { background: #67C23A; }
+    .btn-success:hover { background: #85ce61; }
+    .instructions {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      margin: 20px 0;
+    }
+    .instructions h3 { color: #303133; margin-top: 0; }
+    .instructions ol { padding-left: 20px; }
+    .instructions li { margin: 10px 0; line-height: 1.6; }
+    code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #E6A23C;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎨 小程序图标生成器</h1>
+  
+  <div class="instructions">
+    <h3>使用说明</h3>
+    <ol>
+      <li>点击下方「生成全部图标」按钮</li>
+      <li>图标会显示在下方，右键点击每个图标 → 另存为图片</li>
+      <li>将图片保存到 <code>miniprogram/assets/icons/</code> 目录</li>
+      <li>文件名保持显示的名称（如 home.png）</li>
+    </ol>
+    <button class="btn btn-success" onclick="generateAllIcons()">生成全部图标</button>
+    <button class="btn" onclick="downloadAllAsZip()">打包下载（需要JSZip）</button>
+  </div>
+
+  <div class="icons-grid" id="iconsGrid"></div>
+
+  <script>
+    const ICON_SIZE = 81;
+    const COLORS = {
+      gray: '#999999',
+      blue: '#409EFF',
+      green: '#67C23A',
+      red: '#F56C6C'
+    };
+
+    // 图标绘制函数
+    const iconDrawers = {
+      // 首页 - 房子
+      home: (ctx, color) => {
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 3;
+        
+        // 房顶
+        ctx.beginPath();
+        ctx.moveTo(40.5, 15);
+        ctx.lineTo(15, 35);
+        ctx.lineTo(25, 35);
+        ctx.lineTo(25, 60);
+        ctx.lineTo(56, 60);
+        ctx.lineTo(56, 35);
+        ctx.lineTo(66, 35);
+        ctx.closePath();
+        ctx.stroke();
+        
+        // 门
+        ctx.fillRect(35, 42, 12, 18);
+      },
+
+      // 订单 - 列表
+      order: (ctx, color) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        
+        // 矩形外框
+        ctx.strokeRect(18, 12, 45, 57);
+        
+        // 横线
+        ctx.beginPath();
+        ctx.moveTo(26, 28);
+        ctx.lineTo(55, 28);
+        ctx.moveTo(26, 42);
+        ctx.lineTo(55, 42);
+        ctx.moveTo(26, 56);
+        ctx.lineTo(45, 56);
+        ctx.stroke();
+      },
+
+      // 地图 - 定位
+      map: (ctx, color) => {
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 3;
+        
+        // 定位图标
+        ctx.beginPath();
+        ctx.arc(40.5, 32, 15, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.arc(40.5, 32, 7, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 下面的尖角
+        ctx.beginPath();
+        ctx.moveTo(40.5, 47);
+        ctx.lineTo(30, 68);
+        ctx.lineTo(40.5, 58);
+        ctx.lineTo(51, 68);
+        ctx.closePath();
+        ctx.fill();
+      },
+
+      // 用户 - 人形
+      user: (ctx, color) => {
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 3;
+        
+        // 头
+        ctx.beginPath();
+        ctx.arc(40.5, 25, 12, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 身体
+        ctx.beginPath();
+        ctx.arc(40.5, 70, 22, Math.PI, 0, true);
+        ctx.stroke();
+      },
+
+      // 起点 - 绿色圆点
+      start: (ctx, color) => {
+        ctx.fillStyle = COLORS.green;
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 20, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 内圈
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 8, 0, Math.PI * 2);
+        ctx.fill();
+      },
+
+      // 终点 - 红色圆点
+      end: (ctx, color) => {
+        ctx.fillStyle = COLORS.red;
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 20, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 内圈
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 8, 0, Math.PI * 2);
+        ctx.fill();
+      },
+
+      // 司机位置 - 蓝色车
+      driver: (ctx, color) => {
+        ctx.fillStyle = COLORS.blue;
+        ctx.strokeStyle = COLORS.blue;
+        ctx.lineWidth = 2;
+        
+        // 车身
+        ctx.beginPath();
+        ctx.roundRect(20, 30, 42, 25, 5);
+        ctx.fill();
+        
+        // 车窗
+        ctx.fillStyle = 'white';
+        ctx.fillRect(28, 34, 12, 12);
+        ctx.fillRect(42, 34, 12, 12);
+        
+        // 轮子
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(30, 55, 7, 0, Math.PI * 2);
+        ctx.arc(52, 55, 7, 0, Math.PI * 2);
+        ctx.fill();
+      },
+
+      // 定位按钮
+      location: (ctx, color) => {
+        ctx.strokeStyle = COLORS.blue;
+        ctx.lineWidth = 3;
+        
+        // 十字
+        ctx.beginPath();
+        ctx.moveTo(40.5, 15);
+        ctx.lineTo(40.5, 66);
+        ctx.moveTo(15, 40.5);
+        ctx.lineTo(66, 40.5);
+        ctx.stroke();
+        
+        // 中心圆
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 15, 0, Math.PI * 2);
+        ctx.stroke();
+      },
+
+      // 刷新按钮
+      refresh: (ctx, color) => {
+        ctx.strokeStyle = COLORS.blue;
+        ctx.lineWidth = 3;
+        
+        // 圆形箭头
+        ctx.beginPath();
+        ctx.arc(40.5, 40.5, 22, 0.5, Math.PI * 1.7);
+        ctx.stroke();
+        
+        // 箭头
+        ctx.beginPath();
+        ctx.moveTo(55, 22);
+        ctx.lineTo(60, 35);
+        ctx.lineTo(47, 32);
+        ctx.stroke();
+      }
+    };
+
+    // 创建图标画布
+    function createIconCanvas(name, color) {
+      const canvas = document.createElement('canvas');
+      canvas.width = ICON_SIZE;
+      canvas.height = ICON_SIZE;
+      const ctx = canvas.getContext('2d');
+      
+      // 清空背景（透明）
+      ctx.clearRect(0, 0, ICON_SIZE, ICON_SIZE);
+      
+      // 绘制图标
+      const drawer = iconDrawers[name];
+      if (drawer) {
+        drawer(ctx, color);
+      }
+      
+      return canvas;
+    }
+
+    // 生成所有图标
+    function generateAllIcons() {
+      const grid = document.getElementById('iconsGrid');
+      grid.innerHTML = '';
+      
+      const icons = [
+        { name: 'home', color: COLORS.gray, file: 'home.png' },
+        { name: 'home', color: COLORS.blue, file: 'home-active.png' },
+        { name: 'order', color: COLORS.gray, file: 'order.png' },
+        { name: 'order', color: COLORS.blue, file: 'order-active.png' },
+        { name: 'map', color: COLORS.gray, file: 'map.png' },
+        { name: 'map', color: COLORS.blue, file: 'map-active.png' },
+        { name: 'user', color: COLORS.gray, file: 'user.png' },
+        { name: 'user', color: COLORS.blue, file: 'user-active.png' },
+        { name: 'start', file: 'start.png' },
+        { name: 'end', file: 'end.png' },
+        { name: 'driver', file: 'driver.png' },
+        { name: 'location', file: 'location.png' },
+        { name: 'refresh', file: 'refresh.png' }
+      ];
+      
+      icons.forEach(icon => {
+        const canvas = createIconCanvas(icon.name, icon.color);
+        
+        const card = document.createElement('div');
+        card.className = 'icon-card';
+        
+        const clonedCanvas = document.createElement('canvas');
+        clonedCanvas.width = ICON_SIZE;
+        clonedCanvas.height = ICON_SIZE;
+        clonedCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        
+        card.appendChild(clonedCanvas);
+        
+        const label = document.createElement('p');
+        label.textContent = icon.file;
+        card.appendChild(label);
+        
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'btn';
+        downloadBtn.textContent = '下载';
+        downloadBtn.onclick = () => downloadCanvas(canvas, icon.file);
+        card.appendChild(downloadBtn);
+        
+        grid.appendChild(card);
+      });
+    }
+
+    // 下载单个图标
+    function downloadCanvas(canvas, filename) {
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    // 打包下载所有图标
+    async function downloadAllAsZip() {
+      // 需要引入 JSZip 库
+      alert('请使用「下载」按钮逐个保存图标\n\n或者打开浏览器开发者工具控制台，手动下载');
+    }
+
+    // 页面加载后自动生成
+    window.onload = generateAllIcons;
+  </script>
+</body>
+</html>

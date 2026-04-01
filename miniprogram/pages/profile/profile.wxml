@@ -1,0 +1,109 @@
+<!--pages/profile/profile.wxml-->
+<view class="container">
+  <!-- 用户信息 -->
+  <view class="user-card card">
+    <view class="user-info flex">
+      <view class="avatar">👤</view>
+      <view class="user-detail">
+        <view class="user-name">{{userInfo.real_name}}</view>
+        <view class="user-phone">{{userInfo.phone}}</view>
+        <view class="user-rating">
+          <text>⭐ {{stats.rating}}</text>
+          <text class="rating-text">准时率 {{stats.onTimeRate}}%</text>
+        </view>
+      </view>
+    </view>
+    
+    <!-- 今日数据 -->
+    <view class="today-stats">
+      <view class="today-item">
+        <text class="today-value">{{stats.todayOrders}}</text>
+        <text class="today-label">今日订单</text>
+      </view>
+      <view class="today-divider"></view>
+      <view class="today-item">
+        <text class="today-value text-success">{{formatMoney(stats.todayIncome)}}</text>
+        <text class="today-label">今日收入</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 统计数据 -->
+  <view class="stats-card card">
+    <view class="stats-title">累计数据</view>
+    <view class="stats-grid">
+      <view class="stat-item">
+        <view class="stat-value">{{stats.totalOrders}}</view>
+        <view class="stat-label">总订单</view>
+      </view>
+      <view class="stat-item">
+        <view class="stat-value text-success">{{formatMoney(stats.totalIncome)}}</view>
+        <view class="stat-label">总收入</view>
+      </view>
+      <view class="stat-item">
+        <view class="stat-value">{{stats.totalDistance.toFixed(1)}}</view>
+        <view class="stat-label">总里程(km)</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 快捷功能 -->
+  <view class="quick-actions card">
+    <view class="quick-title">快捷功能</view>
+    <view class="quick-grid">
+      <view class="quick-item" bindtap="openVoiceInput">
+        <text class="quick-icon">🎤</text>
+        <text class="quick-text">语音助手</text>
+      </view>
+      <view class="quick-item" bindtap="showIncomeDetail">
+        <text class="quick-icon">💰</text>
+        <text class="quick-text">收入明细</text>
+      </view>
+      <view class="quick-item" bindtap="showDeliveryStats">
+        <text class="quick-icon">📊</text>
+        <text class="quick-text">配送统计</text>
+      </view>
+      <view class="quick-item" bindtap="showSettings">
+        <text class="quick-icon">⚙️</text>
+        <text class="quick-text">设置</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 功能菜单 -->
+  <view class="menu-card card">
+    <view 
+      wx:for="{{menuItems}}" 
+      wx:key="title"
+      class="menu-item flex-between"
+      bindtap="goToPage"
+      data-page="{{item.page}}"
+    >
+      <view class="menu-left flex">
+        <text class="menu-icon">{{item.icon}}</text>
+        <view class="menu-text">
+          <text class="menu-title">{{item.title}}</text>
+          <text class="menu-desc">{{item.desc}}</text>
+        </view>
+      </view>
+      <text class="menu-arrow">›</text>
+    </view>
+  </view>
+
+  <!-- 底部操作 -->
+  <view class="bottom-actions">
+    <view class="action-btn" bindtap="contactService">
+      📞 联系客服
+    </view>
+    <view class="action-btn logout" bindtap="logout">
+      退出登录
+    </view>
+  </view>
+  
+  <!-- 语音输入组件 -->
+  <voice-input 
+    show="{{showVoiceInput}}" 
+    bind:result="onVoiceResult"
+    bind:cancel="closeVoiceInput"
+  />
+</view>

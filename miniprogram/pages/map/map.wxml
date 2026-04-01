@@ -1,0 +1,49 @@
+<!--pages/map/map.wxml-->
+<view class="map-page">
+  <!-- 地图 -->
+  <map 
+    id="driverMap"
+    latitude="{{latitude}}" 
+    longitude="{{longitude}}" 
+    scale="{{scale}}"
+    markers="{{markers}}"
+    show-location
+    style="width: 100%; height: 100vh;"
+  >
+    <!-- 控件层 -->
+    <view class="map-controls">
+      <!-- 定位按钮 -->
+      <view class="control-btn" bindtap="reLocate">
+        <text>📍</text>
+      </view>
+    </view>
+    
+    <!-- 当前订单卡片 -->
+    <view class="order-card" wx:if="{{currentOrder}}">
+      <view class="order-header">
+        <view class="order-title">当前配送</view>
+        <view class="order-status">配送中</view>
+      </view>
+      <view class="order-route">
+        <view class="route-text">{{currentOrder.origin_address}}</view>
+        <view class="route-arrow">→</view>
+        <view class="route-text">{{currentOrder.destination_address}}</view>
+      </view>
+      <view class="order-info">
+        <view>距离: {{formatDistance(currentOrder.distance)}}</view>
+      </view>
+      <view class="order-btns">
+        <view class="nav-btn outline" bindtap="navigateToOrigin">导航到发货地</view>
+        <view class="nav-btn primary" bindtap="navigateToDestination">导航到收货地</view>
+      </view>
+      <view class="sign-btn" bindtap="goToSign">送达签收</view>
+    </view>
+    
+    <!-- 无订单提示 -->
+    <view class="no-order" wx:if="{{!currentOrder}}">
+      <view class="no-order-icon">🚚</view>
+      <view class="no-order-text">暂无进行中的订单</view>
+      <view class="no-order-hint">接单后可在此查看导航</view>
+    </view>
+  </map>
+</view>

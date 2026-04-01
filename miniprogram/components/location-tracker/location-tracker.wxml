@@ -1,0 +1,5 @@
+<!--components/location-tracker/location-tracker.wxml-->
+<!-- 轨迹上报组件（无UI） -->
+<view class="location-tracker" wx:if="{{isTracking}}">
+  <slot></slot>
+</view>

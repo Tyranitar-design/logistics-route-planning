@@ -1,0 +1,55 @@
+<!--components/voice-input/voice-input.wxml-->
+<view class="voice-input-container" wx:if="{{show}}">
+  <view class="voice-mask" bindtap="cancel"></view>
+  
+  <view class="voice-panel">
+    <view class="voice-header">
+      <view class="voice-title">语音输入</view>
+      <view class="help-btn" bindtap="showHelp">❓</view>
+    </view>
+    
+    <!-- 状态提示 -->
+    <view class="voice-status">{{statusText}}</view>
+    
+    <!-- 录音按钮 -->
+    <view class="voice-btn-wrapper">
+      <view 
+        class="voice-btn {{isRecording ? 'recording' : ''}} {{animationClass}}"
+        catchtouchstart="onTouchStart"
+        catchtouchend="onTouchEnd"
+        catchtouchcancel="onTouchEnd"
+      >
+        <text class="voice-icon">{{isRecording ? '🔴' : '🎤'}}</text>
+        <text class="voice-text">{{isRecording ? '松开结束' : '按住说话'}}</text>
+      </view>
+    </view>
+    
+    <!-- 录音动画 -->
+    <view class="recording-animation" wx:if="{{isRecording}}">
+      <view class="wave"></view>
+      <view class="wave"></view>
+      <view class="wave"></view>
+    </view>
+    
+    <!-- 识别结果 -->
+    <view class="voice-result" wx:if="{{recognizedText}}">
+      <text class="result-label">识别结果：</text>
+      <text class="result-text">{{recognizedText}}</text>
+    </view>
+    
+    <!-- 提示 -->
+    <view class="voice-hint">
+      <text>💡 可用命令：</text>
+      <text class="hint-tag">开始配送</text>
+      <text class="hint-tag">到达发货地</text>
+      <text class="hint-tag">确认取货</text>
+      <text class="hint-tag">完成配送</text>
+    </view>
+    
+    <!-- 操作按钮 -->
+    <view class="voice-actions">
+      <view class="action-btn cancel" bindtap="cancel">取消</view>
+      <view class="action-btn confirm" bindtap="confirm" wx:if="{{recognizedText}}">执行</view>
+    </view>
+  </view>
+</view>

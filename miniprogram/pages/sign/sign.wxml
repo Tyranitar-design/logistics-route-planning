@@ -1,0 +1,112 @@
+<!--pages/sign/sign.wxml-->
+<view class="container">
+  <!-- 订单信息 -->
+  <view class="card" wx:if="{{order}}">
+    <view class="card-title">订单信息</view>
+    <view class="order-info">
+      <view class="info-row">
+        <text class="label">订单号</text>
+        <text class="value">{{order.order_number}}</text>
+      </view>
+      <view class="info-row">
+        <text class="label">收货人</text>
+        <text class="value">{{order.destination.contact}}</text>
+      </view>
+      <view class="info-row">
+        <text class="label">联系电话</text>
+        <text class="value phone" bindtap="callPhone" data-phone="{{order.destination.phone}}">{{order.destination.phone}}</text>
+      </view>
+      <view class="info-row">
+        <text class="label">收货地址</text>
+        <text class="value">{{order.destination.address}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 签收信息 -->
+  <view class="card">
+    <view class="card-title">签收信息</view>
+    
+    <view class="form-item">
+      <text class="form-label required">收货人姓名</text>
+      <input 
+        class="form-input" 
+        placeholder="请输入实际收货人姓名"
+        value="{{receiverName}}"
+        data-field="receiverName"
+        bindinput="onInputChange"
+      />
+    </view>
+    
+    <view class="form-item">
+      <text class="form-label">联系电话</text>
+      <input 
+        class="form-input" 
+        type="number"
+        placeholder="选填"
+        value="{{receiverPhone}}"
+        data-field="receiverPhone"
+        bindinput="onInputChange"
+      />
+    </view>
+    
+    <view class="form-item">
+      <text class="form-label">备注</text>
+      <textarea 
+        class="form-textarea" 
+        placeholder="如有特殊情况请备注"
+        value="{{remark}}"
+        data-field="remark"
+        bindinput="onInputChange"
+      />
+    </view>
+  </view>
+
+  <!-- 电子签名 -->
+  <view class="card">
+    <view class="card-header">
+      <text class="card-title">电子签名</text>
+      <text class="clear-btn" bindtap="clearSignature">清空</text>
+    </view>
+    <view class="signature-area">
+      <canvas 
+        canvas-id="signatureCanvas"
+        class="signature-canvas"
+        style="width: {{canvasWidth}}px; height: {{canvasHeight}}px;"
+        bindtouchstart="onCanvasStart"
+        bindtouchmove="onCanvasMove"
+        bindtouchend="onCanvasEnd"
+      ></canvas>
+      <view class="signature-hint" wx:if="{{paths.length === 0}}">
+        请在此处签名
+      </view>
+    </view>
+  </view>
+
+  <!-- 照片 -->
+  <view class="card">
+    <view class="card-header">
+      <text class="card-title">现场照片</text>
+      <text class="photo-count">{{photos.length}}/3</text>
+    </view>
+    <view class="photo-area">
+      <view class="photo-list">
+        <block wx:for="{{photos}}" wx:key="*this">
+          <view class="photo-item">
+            <image src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}" />
+            <view class="delete-btn" bindtap="deletePhoto" data-index="{{index}}">×</view>
+          </view>
+        </block>
+        <view class="photo-add" bindtap="takePhoto" wx:if="{{photos.length < 3}}">
+          <text class="add-icon">+</text>
+          <text class="add-text">拍照</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部按钮 -->
+  <view class="bottom-bar safe-area-bottom">
+    <button class="submit-btn" bindtap="submitSign">确认签收</button>
+  </view>
+</view>

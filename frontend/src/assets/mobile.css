@@ -1,0 +1,311 @@
+/* 全局移动端适配样式 */
+
+/* ========== 基础响应式 ========== */
+
+/* 小屏幕手机 */
+@media (max-width: 480px) {
+  /* 卡片紧凑 */
+  .el-card {
+    margin-bottom: 10px !important;
+  }
+  
+  .el-card__body {
+    padding: 12px !important;
+  }
+  
+  /* 表格横向滚动 */
+  .el-table {
+    font-size: 12px !important;
+  }
+  
+  .el-table .el-button {
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+  }
+  
+  /* 表单紧凑 */
+  .el-form-item {
+    margin-bottom: 16px !important;
+  }
+  
+  .el-form-item__label {
+    font-size: 13px !important;
+  }
+  
+  /* 对话框全屏 */
+  .el-dialog {
+    width: 95% !important;
+    margin-top: 5vh !important;
+  }
+  
+  /* 按钮组紧凑 */
+  .el-button-group .el-button {
+    padding: 6px 10px !important;
+  }
+  
+  /* 统计卡片 */
+  .stat-card {
+    padding: 12px !important;
+  }
+  
+  .stat-value {
+    font-size: 20px !important;
+  }
+  
+  .stat-label {
+    font-size: 12px !important;
+  }
+  
+  /* 图表容器 */
+  .chart-container {
+    height: 200px !important;
+  }
+  
+  /* 筛选栏 */
+  .filter-bar {
+    flex-direction: column !important;
+    gap: 8px !important;
+  }
+  
+  .filter-bar .el-input,
+  .filter-bar .el-select {
+    width: 100% !important;
+  }
+  
+  /* 页面标题 */
+  .page-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+  
+  .page-header h1 {
+    font-size: 18px !important;
+  }
+}
+
+/* 平板和手机 */
+@media (max-width: 768px) {
+  /* 隐藏次要操作 */
+  .hide-on-mobile {
+    display: none !important;
+  }
+  
+  /* 栅格调整 */
+  .el-col-xs-24 {
+    width: 100% !important;
+  }
+  
+  /* 分页紧凑 */
+  .el-pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  
+  .el-pagination .el-pagination__sizes,
+  .el-pagination .el-pagination__jump {
+    display: none !important;
+  }
+  
+  /* 标签页滚动 */
+  .el-tabs__header {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  
+  .el-tabs__nav-wrap {
+    overflow: visible !important;
+  }
+  
+  /* 搜索框 */
+  .search-box {
+    width: 100% !important;
+    margin-bottom: 10px !important;
+  }
+  
+  /* 操作按钮组 */
+  .action-buttons {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  /* 数据卡片网格 */
+  .data-card-grid {
+    grid-template-columns: 1fr !important;
+  }
+  
+  /* 双栏布局变单栏 */
+  .two-column {
+    flex-direction: column !important;
+  }
+  
+  .two-column > * {
+    width: 100% !important;
+  }
+}
+
+/* ========== 特定组件适配 ========== */
+
+/* Dashboard 统计卡片 */
+@media (max-width: 768px) {
+  .dashboard-stats {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px !important;
+  }
+  
+  .dashboard-stat-card {
+    padding: 12px !important;
+  }
+  
+  .dashboard-stat-card .value {
+    font-size: 18px !important;
+  }
+}
+
+/* 地图容器 */
+@media (max-width: 768px) {
+  .map-container {
+    height: 300px !important;
+  }
+  
+  .map-controls {
+    flex-direction: column !important;
+    gap: 8px !important;
+  }
+}
+
+/* 订单列表 */
+@media (max-width: 768px) {
+  .order-list .order-card {
+    padding: 12px !important;
+  }
+  
+  .order-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+  }
+  
+  .order-status {
+    margin-left: 0 !important;
+  }
+}
+
+/* 成本分析图表 */
+@media (max-width: 768px) {
+  .cost-chart-row {
+    flex-direction: column !important;
+  }
+  
+  .cost-chart-row > * {
+    width: 100% !important;
+    margin-bottom: 15px !important;
+  }
+}
+
+/* 预警卡片 */
+@media (max-width: 768px) {
+  .alert-cards {
+    grid-template-columns: 1fr !important;
+  }
+  
+  .alert-card {
+    padding: 10px !important;
+  }
+  
+  .alert-card .alert-title {
+    font-size: 14px !important;
+  }
+}
+
+/* ========== 深色主题移动端适配 ========== */
+
+@media (max-width: 768px) {
+  /* 科技风大屏适配 */
+  .tech-dashboard {
+    padding: 10px !important;
+  }
+  
+  .tech-card {
+    padding: 12px !important;
+  }
+  
+  .tech-header h2 {
+    font-size: 16px !important;
+  }
+  
+  .tech-value {
+    font-size: 24px !important;
+  }
+  
+  /* 3D地球 */
+  .earth-3d-container {
+    height: 250px !important;
+  }
+}
+
+/* ========== 表格移动端优化 ========== */
+
+/* 表格横向滚动容器 */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 移动端表格卡片式布局 */
+@media (max-width: 768px) {
+  .mobile-card-list {
+    display: block !important;
+  }
+  
+  .mobile-card-list .el-table {
+    display: none !important;
+  }
+  
+  .mobile-card-item {
+    background: #fff;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  }
+  
+  .mobile-card-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  
+  .mobile-card-row:last-child {
+    border-bottom: none;
+  }
+  
+  .mobile-card-label {
+    color: #909399;
+    font-size: 12px;
+  }
+  
+  .mobile-card-value {
+    color: #303133;
+    font-size: 13px;
+    font-weight: 500;
+  }
+}
+
+/* ========== 打印优化 ========== */
+
+@media print {
+  .sidebar,
+  .header,
+  .hamburger-btn,
+  .mobile-overlay {
+    display: none !important;
+  }
+  
+  .main {
+    padding: 0 !important;
+    background: #fff !important;
+  }
+}

@@ -1,0 +1,78 @@
+<!--pages/orders/orders.wxml-->
+<view class="container">
+  <!-- 标签栏 -->
+  <view class="tabs">
+    <view 
+      wx:for="{{tabs}}" 
+      wx:key="key"
+      class="tab-item {{activeTab === item.key ? 'active' : ''}}"
+      bindtap="switchTab"
+      data-key="{{item.key}}"
+    >
+      {{item.name}}
+    </view>
+  </view>
+
+  <!-- 订单列表 -->
+  <view class="order-list">
+    <view wx:if="{{orders.length === 0 && !loading}}" class="empty-state">
+      <view class="empty-icon">📋</view>
+      <text>暂无订单</text>
+    </view>
+    
+    <view wx:for="{{orders}}" wx:key="id" class="order-card card" bindtap="goToDetail" data-id="{{item.id}}">
+      <view class="order-header flex-between">
+        <text class="order-number">{{item.order_number}}</text>
+        <view class="tag tag-{{item.status === 'pending' ? 'warning' : (item.status === 'in_progress' ? 'primary' : (item.status === 'accepted' ? 'info' : 'success'))}}">
+          {{item.status === 'pending' ? '待接单' : (item.status === 'accepted' ? '已接单' : (item.status === 'in_progress' ? '配送中' : '已完成'))}}
+        </view>
+      </view>
+      
+      <view class="order-route">
+        <view class="route-point flex">
+          <view class="point-icon start"></view>
+          <view class="point-text">
+            <text class="label">发货</text>
+            <text class="address">{{item.origin_address}}</text>
+          </view>
+        </view>
+        <view class="route-arrow">↓</view>
+        <view class="route-point flex">
+          <view class="point-icon end"></view>
+          <view class="point-text">
+            <text class="label">收货</text>
+            <text class="address">{{item.destination_address}}</text>
+          </view>
+        </view>
+      </view>
+      
+      <view class="order-meta flex-between">
+        <view class="meta-left">
+          <text class="meta-item">距离: {{formatDistance(item.distance)}}</text>
+          <text class="meta-item">运费: {{formatMoney(item.freight)}}</text>
+        </view>
+        <view class="order-actions">
+          <!-- 待接单状态 -->
+          <view wx:if="{{activeTab === 'pending'}}" class="btn btn-primary btn-sm" catchtap="acceptOrder" data-id="{{item.id}}">
+            接单
+          </view>
+          <!-- 已接单状态 -->
+          <view wx:elif="{{item.status === 'accepted'}}" class="btn btn-primary btn-sm" catchtap="startDelivery" data-id="{{item.id}}">
+            开始配送
+          </view>
+          <!-- 配送中状态 -->
+          <view wx:elif="{{item.status === 'in_progress'}}" class="btn btn-success btn-sm" catchtap="goToSign" data-id="{{item.id}}">
+            签收
+          </view>
+          <!-- 已完成状态 -->
+          <view wx:else class="btn btn-outline btn-sm">查看详情</view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 加载状态 -->
+  <view wx:if="{{loading}}" class="loading">
+    <text>加载中...</text>
+  </view>
+</view>

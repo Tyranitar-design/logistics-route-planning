@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "司机工作台",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "voice-input": "/components/voice-input/voice-input"
+  }
+}

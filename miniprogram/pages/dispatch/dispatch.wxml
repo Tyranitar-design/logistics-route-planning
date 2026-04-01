@@ -1,0 +1,112 @@
+<!--pages/dispatch/dispatch.wxml-->
+<view class="container">
+  <!-- 空状态 -->
+  <view wx:if="{{notifications.length === 0 && !loading}}" class="empty-state">
+    <view class="empty-icon">📭</view>
+    <view class="empty-text">暂无派单通知</view>
+    <view class="empty-hint">有新订单时会第一时间通知您</view>
+  </view>
+
+  <!-- 派单列表 -->
+  <view class="dispatch-list">
+    <view 
+      wx:for="{{notifications}}" 
+      wx:key="id" 
+      class="dispatch-card"
+    >
+      <view class="dispatch-header">
+        <view class="dispatch-badge">新派单</view>
+        <view class="dispatch-time">{{item.created_at}}</view>
+      </view>
+      
+      <view class="dispatch-content" bindtap="showDispatchDetail" data-notification="{{item}}">
+        <view class="route-info">
+          <view class="route-point">
+            <view class="point-icon start"></view>
+            <view class="point-text">
+              <text class="point-label">发货</text>
+              <text class="point-address">{{item.origin_address || '待确认'}}</text>
+            </view>
+          </view>
+          <view class="route-line">
+            <view class="distance">{{formatDistance(item.distance)}}</view>
+          </view>
+          <view class="route-point">
+            <view class="point-icon end"></view>
+            <view class="point-text">
+              <text class="point-label">收货</text>
+              <text class="point-address">{{item.destination_address || '待确认'}}</text>
+            </view>
+          </view>
+        </view>
+        
+        <view class="dispatch-meta">
+          <view class="meta-item">
+            <text class="meta-label">运费</text>
+            <text class="meta-value text-success">{{formatMoney(item.freight)}}</text>
+          </view>
+          <view class="meta-item">
+            <text class="meta-label">货物</text>
+            <text class="meta-value">{{item.goods_name || '普通货物'}}</text>
+          </view>
+        </view>
+      </view>
+      
+      <view class="dispatch-actions">
+        <button class="action-btn reject" catchtap="rejectDispatch" data-id="{{item.id}}">拒绝</button>
+        <button class="action-btn accept" catchtap="acceptDispatch" data-id="{{item.id}}">接受</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 加载状态 -->
+  <view wx:if="{{loading}}" class="loading">
+    <text>加载中...</text>
+  </view>
+
+  <!-- 详情弹窗 -->
+  <view class="detail-mask" wx:if="{{showDetail}}" bindtap="closeDetail">
+    <view class="detail-popup" catchtap="stopPropagation">
+      <view class="popup-header">
+        <text class="popup-title">派单详情</text>
+        <text class="popup-close" bindtap="closeDetail">×</text>
+      </view>
+      
+      <view class="popup-content" wx:if="{{currentDispatch}}">
+        <view class="detail-row">
+          <text class="detail-label">订单号</text>
+          <text class="detail-value">{{currentDispatch.order_number}}</text>
+        </view>
+        <view class="detail-row">
+          <text class="detail-label">发货地址</text>
+          <text class="detail-value">{{currentDispatch.origin_address}}</text>
+        </view>
+        <view class="detail-row">
+          <text class="detail-label">收货地址</text>
+          <text class="detail-value">{{currentDispatch.destination_address}}</text>
+        </view>
+        <view class="detail-row">
+          <text class="detail-label">运费</text>
+          <text class="detail-value text-success">{{formatMoney(currentDispatch.freight)}}</text>
+        </view>
+        <view class="detail-row">
+          <text class="detail-label">距离</text>
+          <text class="detail-value">{{formatDistance(currentDispatch.distance)}}</text>
+        </view>
+        <view class="detail-row">
+          <text class="detail-label">货物</text>
+          <text class="detail-value">{{currentDispatch.goods_name || '普通货物'}}</text>
+        </view>
+        <view class="detail-row" wx:if="{{currentDispatch.weight}}">
+          <text class="detail-label">重量</text>
+          <text class="detail-value">{{currentDispatch.weight}}kg</text>
+        </view>
+      </view>
+      
+      <view class="popup-actions">
+        <button class="popup-btn reject" bindtap="closeDetail">取消</button>
+        <button class="popup-btn accept" bindtap="quickAccept">接受派单</button>
+      </view>
+    </view>
+  </view>
+</view>

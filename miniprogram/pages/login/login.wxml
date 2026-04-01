@@ -1,0 +1,65 @@
+<!--pages/login/login.wxml-->
+<view class="login-page">
+  <!-- Logo -->
+  <view class="logo-section">
+    <view class="logo-icon">🚚</view>
+    <view class="title">物流司机端</view>
+    <view class="subtitle">高效配送，轻松接单</view>
+  </view>
+
+  <!-- 登录方式 -->
+  <view class="login-section">
+    <!-- 账号密码登录 -->
+    <view class="form-item">
+      <view class="input-icon">👤</view>
+      <input 
+        type="text" 
+        placeholder="请输入账号"
+        value="{{phone}}"
+        bindinput="onPhoneInput"
+      />
+    </view>
+    
+    <view class="form-item">
+      <view class="input-icon">🔒</view>
+      <input 
+        type="password" 
+        placeholder="请输入密码"
+        value="{{password}}"
+        bindinput="onPasswordInput"
+      />
+    </view>
+    
+    <button class="login-btn" bindtap="login" loading="{{loading}}">
+      登 录
+    </button>
+    
+    <!-- 演示账号 -->
+    <view class="demo-section">
+      <text class="demo-tip">演示账号：driver / driver123</text>
+      <view class="demo-btn" bindtap="demoLogin">一键体验</view>
+    </view>
+    
+    <view class="divider">
+      <text>其他登录方式</text>
+    </view>
+    
+    <!-- 微信登录 -->
+    <button 
+      class="wx-login-btn"
+      bindtap="wxLogin"
+      loading="{{loading}}"
+    >
+      <text class="btn-icon">📱</text>
+      微信授权登录
+    </button>
+  </view>
+
+  <!-- 协议 -->
+  <view class="agreement">
+    <text>登录即表示同意</text>
+    <text class="link">《用户协议》</text>
+    <text>和</text>
+    <text class="link">《隐私政策》</text>
+  </view>
+</view>

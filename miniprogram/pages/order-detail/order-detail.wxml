@@ -1,0 +1,127 @@
+<!--pages/order-detail/order-detail.wxml-->
+<view class="container" wx:if="{{order}}">
+  <!-- 状态卡片 -->
+  <view class="status-card card">
+    <view class="status-header flex-between">
+      <view>
+        <view class="status-text">订单状态</view>
+        <view class="status-value">{{order.status === 'accepted' ? '已接单' : (order.status === 'picked_up' ? '已取货' : (order.status === 'in_progress' ? '配送中' : '已完成'))}}</view>
+      </view>
+      <view class="status-icon">
+        <text wx:if="{{order.status === 'accepted'}}">📝</text>
+        <text wx:elif="{{order.status === 'picked_up'}}">📦</text>
+        <text wx:elif="{{order.status === 'in_progress'}}">🚚</text>
+        <text wx:else>✅</text>
+      </view>
+    </view>
+    <view class="order-no">订单号: {{order.order_number}}</view>
+    
+    <!-- 步骤条 -->
+    <view class="steps">
+      <view wx:for="{{steps}}" wx:key="text" class="step {{item.status}}">
+        <view class="step-circle">{{item.status === 'finish' ? '✓' : (item.status === 'process' ? index + 1 : '')}}</view>
+        <view class="step-text">{{item.text}}</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 地图 -->
+  <view class="map-section card">
+    <map 
+      id="orderMap"
+      latitude="{{latitude}}" 
+      longitude="{{longitude}}" 
+      scale="12"
+      markers="{{markers}}"
+      show-location
+      style="width: 100%; height: 200px;"
+    ></map>
+    <view class="map-actions flex-between">
+      <view class="map-btn" bindtap="navigateToOrigin">
+        📍 导航到发货地
+      </view>
+      <view class="map-btn" bindtap="navigateToDestination">
+        📍 导航到收货地
+      </view>
+    </view>
+  </view>
+
+  <!-- 路线信息 -->
+  <view class="route-section card">
+    <view class="section-title">路线信息</view>
+    <view class="route-card">
+      <view class="route-point">
+        <view class="point-icon start"></view>
+        <view class="point-content">
+          <view class="point-label">发货地</view>
+          <view class="point-address">{{order.origin_address}}</view>
+          <view class="point-contact" wx:if="{{order.sender_phone}}" bindtap="callPhone" data-phone="{{order.sender_phone}}">
+            📞 {{order.sender_name}} {{order.sender_phone}}
+          </view>
+        </view>
+      </view>
+      <view class="route-line">
+        <view class="route-distance">{{formatDistance(order.distance)}}</view>
+      </view>
+      <view class="route-point">
+        <view class="point-icon end"></view>
+        <view class="point-content">
+          <view class="point-label">收货地</view>
+          <view class="point-address">{{order.destination_address}}</view>
+          <view class="point-contact" wx:if="{{order.receiver_phone}}" bindtap="callPhone" data-phone="{{order.receiver_phone}}">
+            📞 {{order.receiver_name}} {{order.receiver_phone}}
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 订单信息 -->
+  <view class="info-section card">
+    <view class="section-title">订单信息</view>
+    <view class="info-list">
+      <view class="info-item flex-between">
+        <text class="info-label">货物名称</text>
+        <text class="info-value">{{order.goods_name || '-'}}</text>
+      </view>
+      <view class="info-item flex-between">
+        <text class="info-label">货物重量</text>
+        <text class="info-value">{{order.weight ? order.weight + 'kg' : '-'}}</text>
+      </view>
+      <view class="info-item flex-between">
+        <text class="info-label">运费</text>
+        <text class="info-value text-primary">{{formatMoney(order.freight)}}</text>
+      </view>
+      <view class="info-item flex-between">
+        <text class="info-label">预计时长</text>
+        <text class="info-value">{{order.estimated_duration ? order.estimated_duration + '分钟' : '-'}}</text>
+      </view>
+      <view class="info-item flex-between">
+        <text class="info-label">接单时间</text>
+        <text class="info-value">{{formatTime(order.accepted_at)}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部操作按钮 -->
+  <view class="bottom-bar safe-area-bottom">
+    <view wx:if="{{order.status === 'accepted'}}" class="btn-group">
+      <button class="btn btn-outline" bindtap="confirmPickup">确认取货</button>
+      <button class="btn btn-primary" bindtap="startDelivery">开始配送</button>
+    </view>
+    <view wx:if="{{order.status === 'picked_up'}}" class="btn btn-primary full-btn" bindtap="startDelivery">
+      开始配送
+    </view>
+    <view wx:if="{{order.status === 'in_progress'}}" class="btn btn-success full-btn" bindtap="goToSign">
+      送达签收
+    </view>
+    <view wx:if="{{order.status === 'completed'}}" class="btn btn-disabled full-btn">
+      订单已完成 ✓
+    </view>
+  </view>
+</view>
+
+<!-- 加载状态 -->
+<view wx:if="{{loading}}" class="loading-mask">
+  <view class="loading-spinner"></view>
+</view>

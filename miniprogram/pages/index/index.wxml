@@ -1,0 +1,134 @@
+<!--pages/index/index.wxml-->
+<view class="container">
+  <!-- 顶部状态栏 -->
+  <view class="status-bar flex-between">
+    <view class="flex-center">
+      <view class="status-dot {{vehicleStatus === 'online' ? 'online' : 'offline'}}"></view>
+      <text class="ml-10">{{vehicleStatus === 'online' ? '接单中' : '休息中'}}</text>
+    </view>
+    <view class="switch-btn" bindtap="toggleVehicleStatus">
+      {{vehicleStatus === 'online' ? '下线休息' : '上线接单'}}
+    </view>
+  </view>
+
+  <!-- 今日统计 -->
+  <view class="stats-card card">
+    <view class="stats-title">今日数据</view>
+    <view class="stats-grid">
+      <view class="stat-item">
+        <view class="stat-value">{{stats.completedOrders || 0}}</view>
+        <view class="stat-label">完成订单</view>
+      </view>
+      <view class="stat-item">
+        <view class="stat-value">{{formatDistance(stats.totalDistance)}}</view>
+        <view class="stat-label">行驶里程</view>
+      </view>
+      <view class="stat-item">
+        <view class="stat-value text-success">{{formatMoney(stats.totalIncome)}}</view>
+        <view class="stat-label">今日收入</view>
+      </view>
+      <view class="stat-item">
+        <view class="stat-value">{{stats.onTimeRate || 0}}%</view>
+        <view class="stat-label">准时率</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 进行中的订单 -->
+  <view class="section" wx:if="{{currentOrder}}">
+    <view class="section-title">当前配送</view>
+    <view class="order-card card current-order" bindtap="goToOrderDetail" data-id="{{currentOrder.id}}">
+      <view class="order-header flex-between">
+        <text class="order-id">订单号: {{currentOrder.order_number}}</text>
+        <view class="tag tag-primary">配送中</view>
+      </view>
+      <view class="order-route">
+        <view class="route-point">
+          <view class="point-icon start"></view>
+          <view class="point-info">
+            <text class="point-label">发货地</text>
+            <text class="point-address">{{currentOrder.origin_address}}</text>
+          </view>
+        </view>
+        <view class="route-line"></view>
+        <view class="route-point">
+          <view class="point-icon end"></view>
+          <view class="point-info">
+            <text class="point-label">收货地</text>
+            <text class="point-address">{{currentOrder.destination_address}}</text>
+          </view>
+        </view>
+      </view>
+      <view class="order-footer flex-between">
+        <view class="order-info">
+          <text class="text-info">距离: {{formatDistance(currentOrder.distance)}}</text>
+        </view>
+        <view class="btn btn-primary btn-sm" bindtap="goToOrderDetail" data-id="{{currentOrder.id}}">
+          查看详情
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 待接单列表 -->
+  <view class="section">
+    <view class="section-header flex-between">
+      <view class="section-title">待接订单</view>
+      <view class="more-btn" bindtap="goToMoreOrders">
+        查看更多 >
+      </view>
+    </view>
+    
+    <view wx:if="{{pendingOrders.length === 0}}" class="empty-state">
+      <text>暂无待接订单</text>
+    </view>
+    
+    <view wx:for="{{pendingOrders}}" wx:key="id" class="order-card card">
+      <view class="order-header flex-between">
+        <text class="order-id">订单号: {{item.order_number}}</text>
+        <view class="tag tag-warning">待接单</view>
+      </view>
+      <view class="order-route">
+        <view class="route-point">
+          <view class="point-icon start"></view>
+          <view class="point-info">
+            <text class="point-label">发货地</text>
+            <text class="point-address">{{item.origin_address}}</text>
+          </view>
+        </view>
+        <view class="route-line"></view>
+        <view class="route-point">
+          <view class="point-icon end"></view>
+          <view class="point-info">
+            <text class="point-label">收货地</text>
+            <text class="point-address">{{item.destination_address}}</text>
+          </view>
+        </view>
+      </view>
+      <view class="order-info-row flex-between mt-10">
+        <view class="order-info">
+          <text>距离: {{formatDistance(item.distance)}}</text>
+          <text class="ml-10">|</text>
+          <text class="ml-10">运费: {{formatMoney(item.freight)}}</text>
+        </view>
+        <view class="btn btn-primary btn-sm" catchtap="acceptOrder" data-id="{{item.id}}">
+          立即接单
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
+
+<!-- 语音输入浮动按钮 -->
+<view class="voice-float-btn" bindtap="showVoiceInput">
+  <text class="voice-icon">🎤</text>
+</view>
+
+<!-- 语音输入组件 -->
+<voice-input 
+  show="{{showVoiceInput}}"
+  autoExecute="{{true}}"
+  bind:cancel="hideVoiceInput"
+  bind:command="onVoiceCommand"
+  bind:error="hideVoiceInput"
+/>

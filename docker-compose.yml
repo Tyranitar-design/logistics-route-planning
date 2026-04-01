@@ -1,0 +1,100 @@
+# Docker Compose 配置 - 物流路径规划系统
+# 完整版：43 项功能 + WebSocket + ML 预测
+
+services:
+  # ==================== 后端服务 ====================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: logistics-backend
+    ports:
+      - "5000:5000"
+    environment:
+      # Flask 配置
+      - FLASK_CONFIG=docker
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+      
+      # 安全密钥（生产环境请修改！）
+      - SECRET_KEY=logistics-secret-key-change-in-production-2026
+      - JWT_SECRET_KEY=jwt-secret-key-change-in-production-2026
+      
+      # API Keys
+      - AMAP_KEY=e471e7d99965ef1f1a0d4113f580f5db
+      - TIANAPI_KEY=e2c7bbdbce2502c8460aa05ad0d57fe1
+      
+    volumes:
+      # 数据持久化
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./database:/app/database
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - logistics-network
+
+  # ==================== 前端服务 ====================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: logistics-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - logistics-network
+
+# ==================== 数据卷 ====================
+volumes:
+  data:
+    driver: local
+  logs:
+    driver: local
+
+# ==================== 网络 ====================
+networks:
+  logistics-network:
+    driver: bridge
+    name: logistics-network
+
+# ==================== 使用说明 ====================
+# 
+# 启动服务：
+#   docker-compose up -d
+#
+# 查看日志：
+#   docker-compose logs -f
+#
+# 停止服务：
+#   docker-compose down
+#
+# 重新构建：
+#   docker-compose build --no-cache
+#   docker-compose up -d
+#
+# 访问地址：
+#   前端：http://localhost:8080
+#   后端：http://localhost:5000
+#   默认账号：admin / admin123
+#
+# 生产环境注意：
+#   1. 修改 SECRET_KEY 和 JWT_SECRET_KEY
+#   2. 配置 HTTPS（添加 SSL 证书）
+#   3. 修改默认密码
+#   4. 配置防火墙规则
