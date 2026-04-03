@@ -1,6 +1,8 @@
 # 🚚 物流路径规划与管理信息系统
 ## Intelligent Logistics Route Planning & Management System
 
+> 🌐 **[在线演示](https://logistics-demo-yu.top)** - 点击立即体验完整系统！
+
 ---
 
 **版本**: v1.0  
