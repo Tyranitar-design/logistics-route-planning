@@ -38,6 +38,10 @@ if __name__ == "__main__":
     # 启动后台推送线程
     start_background_push()
     
+    # 启动 Kafka 消费者
+    from app.services.kafka_consumer_service import init_kafka_consumer
+    init_kafka_consumer(socketio)
+    
     try:
         # 使用 SocketIO 运行（支持 WebSocket）
         socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)

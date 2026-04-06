@@ -83,6 +83,7 @@ def create_app(config_name='default'):
     from app.routes.audit import audit_bp
     from app.routes.test_data import test_data_bp
     from app.routes.speech import speech_bp
+    from app.routes.bigdata import bigdata_bp
     
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(nodes_bp, url_prefix='/api/nodes')
@@ -122,6 +123,37 @@ def create_app(config_name='default'):
     
     # 语音识别 API
     app.register_blueprint(speech_bp, url_prefix='/api/speech')
+    
+    # 大数据分析 API
+    app.register_blueprint(bigdata_bp, url_prefix='/api/bigdata')
+    
+    # Prometheus 监控指标 API
+    from app.routes.metrics import metrics_bp
+    app.register_blueprint(metrics_bp, url_prefix='/api')
+    
+    # Elasticsearch 搜索 API
+    from app.routes.es_search import es_bp
+    app.register_blueprint(es_bp, url_prefix='/api/es')
+    
+    # ClickHouse 大数据分析 API
+    from app.routes.clickhouse import ch_bp
+    app.register_blueprint(ch_bp, url_prefix='/api/ch')
+    
+    # Spark Streaming API
+    from app.routes.spark_api import spark_bp
+    app.register_blueprint(spark_bp, url_prefix='/api/spark')
+    
+    # Spark 分析 API
+    from app.routes.spark import spark_bp
+    app.register_blueprint(spark_bp, url_prefix='/api/spark')
+    
+    # Redis 缓存 API
+    from app.routes.redis import redis_bp
+    app.register_blueprint(redis_bp, url_prefix='/api/redis')
+    
+    # 数据采集 API
+    from app.routes.data_collection import data_collection_bp
+    app.register_blueprint(data_collection_bp, url_prefix='/api/crawler')
     
     # 注册新功能路由
     register_advanced_ml_routes(app)

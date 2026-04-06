@@ -44,6 +44,11 @@
           <span>{{ t('menu.dataScreen') }}</span>
         </el-menu-item>
         
+        <el-menu-item index="/big-data">
+          <el-icon><DataBoard /></el-icon>
+          <span>大数据大屏</span>
+        </el-menu-item>
+        
         <el-menu-item index="/nodes">
           <el-icon><OfficeBuilding /></el-icon>
           <span>{{ t('menu.nodes') }}</span>
@@ -148,6 +153,16 @@
           <el-icon><SetUp /></el-icon>
           <span>{{ t('menu.testData') }}</span>
         </el-menu-item>
+        
+        <el-menu-item index="/data-collection">
+          <el-icon><Download /></el-icon>
+          <span>📊 数据采集</span>
+        </el-menu-item>
+        
+        <el-menu-item index="/bigdata/monitor">
+          <el-icon><Monitor /></el-icon>
+          <span>📊 大数据分析</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     
@@ -216,7 +231,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { VideoPlay, TrendCharts, Grid, Promotion, DataLine, Cpu, Lightning, Warning, Bell, MagicStick, Expand, Fold, Shop, Van, User, Document, SetUp } from '@element-plus/icons-vue'
+import { VideoPlay, TrendCharts, Grid, Promotion, DataLine, Cpu, Lightning, Warning, Bell, MagicStick, Expand, Fold, Shop, Van, User, Document, SetUp, DataBoard, Monitor, Download } from '@element-plus/icons-vue'
 import RealtimeNotification from '@/components/RealtimeNotification.vue'
 import AiChat from '@/components/AiChat.vue'
 import LangSwitch from '@/components/LangSwitch.vue'
@@ -270,7 +285,9 @@ const pageTitle = computed(() => {
     '/vehicles': '车辆管理',
     '/users': '用户管理',
     '/audit-log': '审计日志',
-    '/test-data': '测试数据生成'
+    '/test-data': '测试数据生成',
+    '/data-collection': '数据采集中心',
+    '/big-data': '大数据大屏'
   }
   return titles[route.path] || '物流路径规划系统'
 })

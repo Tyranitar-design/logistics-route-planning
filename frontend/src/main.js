@@ -12,6 +12,12 @@ import i18n from './locales'
 import './assets/main.css'
 import './assets/mobile.css' // 移动端响应式样式
 
+// 初始化 WebSocket 服务
+import { wsService } from './services/websocket'
+wsService.connect('http://localhost:5000')
+window.socketInstance = wsService.socket
+window.wsService = wsService
+
 // 过滤 Element Plus DropdownManager 调试日志
 const originalLog = console.log
 console.log = (...args) => {

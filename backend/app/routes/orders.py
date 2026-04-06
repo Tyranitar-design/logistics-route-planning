@@ -6,6 +6,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models import db, Order, User, Node
 from datetime import datetime
 from app.services.order_route_service import get_order_route_service
+from app.services.kafka_service import send_order_event
 
 orders_bp = Blueprint('orders', __name__)
 
@@ -84,6 +85,12 @@ def create_order():
     db.session.add(order)
     db.session.commit()
     
+    # 发送到 Kafka
+    try:
+        send_order_event(order.to_dict(), 'created')
+    except Exception as e:
+        print(f'Kafka send failed: {e}')
+    
     return jsonify({
         'message': '订单创建成功',
         'order': order.to_dict()
@@ -122,6 +129,12 @@ def update_order(order_id):
     
     order.updated_at = datetime.utcnow()
     db.session.commit()
+    
+    # 发送状态更新到 Kafka
+    try:
+        send_order_event(order.to_dict(), 'updated')
+    except Exception as e:
+        print(f'Kafka send failed: {e}')
     
     return jsonify({
         'message': '订单更新成功',

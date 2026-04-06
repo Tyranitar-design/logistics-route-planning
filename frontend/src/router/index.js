@@ -133,14 +133,29 @@ const routes = [
         component: () => import('@/views/TestDataView.vue')
       },
       {
+        path: 'data-collection',
+        name: 'DataCollection',
+        component: () => import('@/views/DataCollectionView.vue')
+      },
+      {
         path: 'data-screen',
         name: 'DataScreen',
         component: () => import('@/views/DataScreen.vue'),
+        meta: { fullscreen: true }
+      },
+      {
+        path: 'big-data',
+        name: 'BigData',
+        component: () => import('@/views/BigDataScreen.vue'),
         meta: { fullscreen: true }
       }
     ]
   }
 ]
+
+// 大数据分析模块路由
+import bigdataRoutes from './bigdata'
+routes.push(...bigdataRoutes)
 
 const router = createRouter({
   history: createWebHistory(),
