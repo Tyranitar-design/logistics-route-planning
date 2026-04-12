@@ -259,3 +259,64 @@ def dashboard_data():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@bigdata_bp.route('/test-kafka', methods=['POST'])
+def test_kafka():
+    """测试 Kafka 数据同步 - 发送测试消息"""
+    try:
+        data = request.get_json() or {}
+        test_type = data.get('type', 'order')
+        
+        if test_type == 'order':
+            # 发送测试订单事件
+            result = send_order_event({
+                'id': 99999,
+                'customer_name': '测试客户',
+                'origin': '北京',
+                'destination': '上海',
+                'status': 'test',
+                'cost': 1000,
+                'weight': 50,
+                'distance': 1200
+            }, 'test')
+            return jsonify({
+                'success': result,
+                'message': '测试订单事件已发送到 Kafka',
+                'topic': 'logistics.orders'
+            })
+            
+        elif test_type == 'vehicle':
+            # 发送测试车辆事件
+            result = send_vehicle_event({
+                'id': 88888,
+                'plate_number': '京A99999',
+                'status': 'active',
+                'latitude': 39.9,
+                'longitude': 116.4,
+                'speed': 60,
+                'driver_name': '测试司机'
+            }, 'test')
+            return jsonify({
+                'success': result,
+                'message': '测试车辆事件已发送到 Kafka',
+                'topic': 'logistics.vehicles'
+            })
+            
+        else:
+            # 发送测试分析事件
+            result = send_analytics_event('test_event', {
+                'test_data': 'Hello Kafka!',
+                'timestamp': str(datetime.now())
+            })
+            return jsonify({
+                'success': result,
+                'message': '测试分析事件已发送到 Kafka',
+                'topic': 'logistics.analytics'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500

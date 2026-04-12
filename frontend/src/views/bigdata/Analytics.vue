@@ -88,7 +88,7 @@ const initLineChart = async () => {
   
   try {
     // 获取真实数据
-    const res = await fetch('http://localhost:5000/api/ch/realtime')
+    const res = await fetch('/api/ch/realtime')
     const data = await res.json()
     
     let hours = []
@@ -226,7 +226,7 @@ const initPieChart = () => {
 const fetchData = async () => {
   try {
     // 获取仪表盘数据
-    const res1 = await fetch('http://localhost:5000/api/ch/dashboard')
+    const res1 = await fetch('/api/ch/dashboard')
     const data1 = await res1.json()
     if (data1.success) {
       const d = data1.data
@@ -241,7 +241,7 @@ const fetchData = async () => {
     }
     
     // 获取性能数据
-    const res2 = await fetch('http://localhost:5000/api/ch/analysis/performance')
+    const res2 = await fetch('/api/ch/analysis/performance')
     const data2 = await res2.json()
     if (data2.success) {
       performance.value = data2.data

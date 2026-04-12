@@ -3,10 +3,18 @@ Flask 应用入口 - 支持 WebSocket
 """
 import os
 import sys
+import socket
 
 # 把项目根目录加入模块搜索路径
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
+
+# 预解析 DNS（修复 eventlet worker DNS 问题）
+for hostname in ['restapi.amap.com', 'webapi.amap.com']:
+    try:
+        socket.getaddrinfo(hostname, 443, socket.AF_INET)
+    except Exception:
+        pass
 
 from app import create_app
 from app.services.websocket_service import init_socketio, start_background_push, stop_background_push

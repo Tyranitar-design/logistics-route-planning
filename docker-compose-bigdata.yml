@@ -1,0 +1,236 @@
+# 📊 大数据平台 Docker Compose 配置
+# 物流路径规划系统 - 大数据技术栈
+
+services:
+  # ==================== 消息队列 ====================
+  
+  # Zookeeper - Kafka 依赖
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: logistics-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    volumes:
+      - zookeeper-data:/bitnami/zookeeper
+    networks:
+      - bigdata-network
+
+  # Kafka - 消息总线
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: logistics-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=3
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka-data:/bitnami/kafka
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Kafka UI - 可视化管理（可选）
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: logistics-kafka-ui
+    ports:
+      - "9000:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=logistics
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+    depends_on:
+      - kafka
+    networks:
+      - bigdata-network
+
+  # ==================== 缓存 ====================
+  
+  # Redis - 缓存与实时数据
+  redis:
+    image: redis:7-alpine
+    container_name: logistics-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ==================== 搜索引擎 ====================
+  
+  # Elasticsearch - 全文搜索
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: logistics-elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ==================== OLAP 数据库 ====================
+  
+  # ClickHouse - 列式分析数据库
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.12
+    container_name: logistics-clickhouse
+    ports:
+      - "8123:8123"  # HTTP
+      - "9000:9000"  # Native
+    environment:
+      - CLICKHOUSE_DB=logistics
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=admin123
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ==================== 数据处理 ====================
+  
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: logistics-spark-master
+    ports:
+      - "7077:7077"   # Spark Master
+      - "8080:8080"   # Spark Web UI
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    volumes:
+      - spark-data:/bitnami/spark
+    networks:
+      - bigdata-network
+
+  # Spark Worker
+  spark-worker:
+    image: bitnami/spark:3.5
+    container_name: logistics-spark-worker
+    ports:
+      - "8081:8081"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_WEBUI_PORT=8081
+    depends_on:
+      - spark-master
+    networks:
+      - bigdata-network
+
+  # ==================== 监控 ====================
+  
+  # Grafana - 数据可视化大屏
+  grafana:
+    image: grafana/grafana:10.2
+    container_name: logistics-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deploy/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - bigdata-network
+
+# ==================== 数据卷 ====================
+volumes:
+  zookeeper-data:
+    driver: local
+  kafka-data:
+    driver: local
+  redis-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+  clickhouse-data:
+    driver: local
+  clickhouse-logs:
+    driver: local
+  spark-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# ==================== 网络 ====================
+networks:
+  bigdata-network:
+    driver: bridge
+    name: logistics-bigdata-network
+
+# ==================== 使用说明 ====================
+#
+# 启动大数据平台：
+#   docker-compose -f docker-compose-bigdata.yml up -d
+#
+# 查看服务状态：
+#   docker-compose -f docker-compose-bigdata.yml ps
+#
+# 查看日志：
+#   docker-compose -f docker-compose-bigdata.yml logs -f
+#
+# 停止服务：
+#   docker-compose -f docker-compose-bigdata.yml down
+#
+# 访问地址：
+#   Kafka UI:     http://localhost:9000
+#   Redis:        localhost:6379
+#   Elasticsearch: http://localhost:9200
+#   ClickHouse:   http://localhost:8123
+#   Spark UI:     http://localhost:8080
+#   Grafana:      http://localhost:3000 (admin/admin123)
+#
+# 初始化 Kafka Topics：
+#   docker exec -it logistics-kafka kafka-topics.sh --create --topic logistics.orders --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1
+#   docker exec -it logistics-kafka kafka-topics.sh --create --topic logistics.vehicles --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1
+#   docker exec -it logistics-kafka kafka-topics.sh --create --topic logistics.tracking --bootstrap-server localhost:9092 --partitions 3 --replication-factor 1
+#   docker exec -it logistics-kafka kafka-topics.sh --create --topic logistics.alerts --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+#   docker exec -it logistics-kafka kafka-topics.sh --create --topic logistics.analytics --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1

@@ -47,6 +47,10 @@
           <el-icon><Lightning /></el-icon>
           <span>Spark处理</span>
         </el-menu-item>
+        <el-menu-item index="/bigdata/flink">
+          <el-icon><Promotion /></el-icon>
+          <span>Flink流处理</span>
+        </el-menu-item>
         <el-menu-item index="/bigdata/dl-studio">
           <el-icon><Cpu /></el-icon>
           <span>深度学习</span>
@@ -54,6 +58,14 @@
         <el-menu-item index="/bigdata/visual">
           <el-icon><DataLine /></el-icon>
           <span>数据可视化</span>
+        </el-menu-item>
+        <el-menu-item index="/bigdata/screen">
+          <el-icon><FullScreen /></el-icon>
+          <span>物流大屏</span>
+        </el-menu-item>
+        <el-menu-item index="/bigdata/classic">
+          <el-icon><DataBoard /></el-icon>
+          <span>经典大屏</span>
         </el-menu-item>
       </el-menu>
 
@@ -81,7 +93,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Monitor, Search, DataAnalysis, Timer, Lightning, Connection, Back } from '@element-plus/icons-vue'
+import { Monitor, Search, DataAnalysis, Timer, Lightning, Connection, Back, Promotion, FullScreen, DataBoard } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -95,7 +107,8 @@ const services = ref([
   { name: 'ClickHouse', status: 'online' },
   { name: 'Airflow', status: 'online' },
   { name: 'Kafka', status: 'online' },
-  { name: 'Spark', status: 'online' }
+  { name: 'Spark', status: 'online' },
+  { name: 'Flink', status: 'online' }
 ])
 
 const goBack = () => {

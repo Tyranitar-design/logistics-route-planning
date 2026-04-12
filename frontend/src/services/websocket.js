@@ -26,7 +26,7 @@ class WebSocketService {
   /**
    * 连接 WebSocket
    */
-  connect(url = 'http://localhost:5000') {
+  connect(url = '') {
     if (this.socket && this.connected) {
       console.log('[WS] 已经连接，无需重复连接')
       return
@@ -34,12 +34,22 @@ class WebSocketService {
 
     console.log('[WS] 正在连接...', url)
     
-    this.socket = io(url, {
-      transports: ['websocket', 'polling'],
+    // 开发环境使用后端地址，生产环境使用当前域名
+    const socketUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:5000'
+
+    console.log('[WS] 连接地址:', socketUrl)
+
+    this.socket = io(socketUrl, {
+      path: '/socket.io/',
+      transports: ['websocket', 'polling'],  // websocket 优先
       reconnection: true,
       reconnectionAttempts: this.maxReconnectAttempts,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000
+      reconnectionDelayMax: 5000,
+      upgrade: true,
+      rememberUpgrade: true,
+      forceNew: true,
+      timeout: 20000
     })
 
     // 连接成功

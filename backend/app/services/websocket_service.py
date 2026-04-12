@@ -47,8 +47,11 @@ def init_socketio(app):
         app, 
         cors_allowed_origins="*", 
         async_mode='threading',
-        logger=True,
-        engineio_logger=True
+        logger=False,  # 关闭日志减少输出
+        engineio_logger=False,
+        ping_timeout=60,
+        ping_interval=25,
+        max_http_buffer_size=10 * 1024 * 1024  # 10MB
     )
     
     return socketio

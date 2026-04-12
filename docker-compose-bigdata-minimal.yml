@@ -1,0 +1,79 @@
+# 📊 大数据平台 Docker Compose 配置 - 精简版
+# 先启动核心组件：Redis + Kafka
+
+services:
+  # ==================== 缓存 ====================
+  
+  # Redis - 缓存与实时数据
+  redis:
+    image: redis:7-alpine
+    container_name: logistics-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ==================== 消息队列 ====================
+  
+  # Zookeeper - Kafka 依赖
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: logistics-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    volumes:
+      - zookeeper-data:/bitnami/zookeeper
+    networks:
+      - bigdata-network
+    restart: unless-stopped
+
+  # Kafka - 消息总线
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: logistics-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=3
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka-data:/bitnami/kafka
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+  zookeeper-data:
+    driver: local
+  kafka-data:
+    driver: local
+
+networks:
+  bigdata-network:
+    driver: bridge
+    name: logistics-bigdata-network

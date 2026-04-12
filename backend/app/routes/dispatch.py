@@ -8,12 +8,14 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.dispatch_service import get_dispatch_service
 from app.services.smart_dispatch_service import get_smart_dispatch_service
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 dispatch_bp = Blueprint('dispatch', __name__)
 
 
 @dispatch_bp.route('/auto', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=15, window_seconds=60, key_func=lambda: f"auto_dispatch:{get_jwt_identity()}")
 def auto_dispatch():
     """
     自动调度

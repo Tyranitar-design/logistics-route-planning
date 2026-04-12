@@ -11,6 +11,7 @@ from app.services.path_algorithm import get_path_service
 from app.services.traffic_service import get_traffic_service
 from app.services.weather_service import get_weather_service
 from app.models import Node
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 multi_obj_bp = Blueprint('multi_objective', __name__)
 
@@ -41,6 +42,7 @@ def get_objectives():
 
 @multi_obj_bp.route('/optimize', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=20, window_seconds=60, key_func=lambda: f"optimize:{get_jwt_identity()}")
 def optimize_route():
     """
     多目标路径优化

@@ -2,8 +2,12 @@
 Prometheus Metrics API
 为 Grafana 监控提供指标数据
 """
-from flask import Blueprint, Response
-from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from flask import Blueprint, Response, jsonify
+try:
+    from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+    HAS_PROMETHEUS = True
+except ImportError:
+    HAS_PROMETHEUS = False
 from app import db
 from sqlalchemy import text
 import time
@@ -12,35 +16,24 @@ metrics_bp = Blueprint('metrics', __name__)
 
 # ==================== Prometheus 指标定义 ====================
 
-# 订单相关指标
-orders_total = Counter('logistics_orders_total', 'Total number of orders')
-orders_active = Gauge('logistics_orders_active', 'Number of active orders')
-orders_by_status = Gauge('logistics_orders_by_status', 'Orders by status', ['status'])
-
-# 车辆相关指标
-vehicles_total = Gauge('logistics_vehicles_total', 'Total number of vehicles')
-vehicles_active = Gauge('logistics_vehicles_active', 'Number of active vehicles')
-vehicles_by_status = Gauge('logistics_vehicles_by_status', 'Vehicles by status', ['status'])
-
-# 路线相关指标
-routes_total = Gauge('logistics_routes_total', 'Total number of routes')
-routes_avg_distance = Gauge('logistics_routes_avg_distance_km', 'Average route distance in km')
-
-# 成本相关指标
-total_cost = Gauge('logistics_total_cost_yuan', 'Total logistics cost in Yuan')
-avg_cost_per_order = Gauge('logistics_avg_cost_per_order', 'Average cost per order')
-
-# 系统健康指标
-system_health = Gauge('logistics_system_health', 'System health score (0-100)')
-database_connections = Gauge('logistics_database_connections', 'Active database connections')
-
-# API 请求统计
-api_requests_total = Counter('logistics_api_requests_total', 'Total API requests', ['endpoint', 'method'])
-api_request_duration = Histogram('logistics_api_request_duration_seconds', 'API request duration', ['endpoint'])
-
-# 预警相关指标
-alerts_total = Gauge('logistics_alerts_total', 'Total number of alerts')
-alerts_by_severity = Gauge('logistics_alerts_by_severity', 'Alerts by severity', ['severity'])
+if HAS_PROMETHEUS:
+    # 订单相关指标
+    orders_total = Counter('logistics_orders_total', 'Total number of orders')
+    orders_active = Gauge('logistics_orders_active', 'Number of active orders')
+    orders_by_status = Gauge('logistics_orders_by_status', 'Orders by status', ['status'])
+    vehicles_total = Gauge('logistics_vehicles_total', 'Total number of vehicles')
+    vehicles_active = Gauge('logistics_vehicles_active', 'Number of active vehicles')
+    vehicles_by_status = Gauge('logistics_vehicles_by_status', 'Vehicles by status', ['status'])
+    routes_total = Gauge('logistics_routes_total', 'Total number of routes')
+    routes_avg_distance = Gauge('logistics_routes_avg_distance_km', 'Average route distance in km')
+    total_cost = Gauge('logistics_total_cost_yuan', 'Total logistics cost in Yuan')
+    avg_cost_per_order = Gauge('logistics_avg_cost_per_order', 'Average cost per order')
+    system_health = Gauge('logistics_system_health', 'System health score (0-100)')
+    database_connections = Gauge('logistics_database_connections', 'Active database connections')
+    api_requests_total = Counter('logistics_api_requests_total', 'Total API requests', ['endpoint', 'method'])
+    api_request_duration = Histogram('logistics_api_request_duration_seconds', 'API request duration', ['endpoint'])
+    alerts_total = Gauge('logistics_alerts_total', 'Total number of alerts')
+    alerts_by_severity = Gauge('logistics_alerts_by_severity', 'Alerts by severity', ['severity'])
 
 
 def update_metrics():
@@ -112,6 +105,8 @@ def prometheus_metrics():
     Prometheus 指标端点
     访问: GET /api/metrics
     """
+    if not HAS_PROMETHEUS:
+        return jsonify({'success': False, 'error': 'prometheus_client not installed'}), 503
     # 更新指标
     update_metrics()
     

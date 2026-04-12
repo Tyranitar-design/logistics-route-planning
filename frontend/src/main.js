@@ -14,7 +14,7 @@ import './assets/mobile.css' // 移动端响应式样式
 
 // 初始化 WebSocket 服务
 import { wsService } from './services/websocket'
-wsService.connect('http://localhost:5000')
+wsService.connect('')
 window.socketInstance = wsService.socket
 window.wsService = wsService
 

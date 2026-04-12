@@ -6,6 +6,7 @@ Redis 缓存 API
 """
 
 from flask import Blueprint, jsonify, request
+from flask_jwt_extended import jwt_required
 from app.services.redis_service import (
     get_popular_routes,
     get_order_count,
@@ -21,6 +22,7 @@ redis_bp = Blueprint('redis', __name__)
 
 
 @redis_bp.route('/status', methods=['GET'])
+@jwt_required()
 def redis_status():
     """获取 Redis 连接状态"""
     return jsonify({
@@ -30,6 +32,7 @@ def redis_status():
 
 
 @redis_bp.route('/popular-routes', methods=['GET'])
+@jwt_required()
 def popular_routes():
     """
     获取热门路线排行
@@ -47,6 +50,7 @@ def popular_routes():
 
 
 @redis_bp.route('/order-count', methods=['GET'])
+@jwt_required()
 def order_count():
     """
     获取订单计数

@@ -3,16 +3,21 @@
 """
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from app.models import db, Order, User, Node
+from pydantic import ValidationError
 from datetime import datetime
+
+from app.models import db, Order, User, Node
+from app.schemas import OrderCreate, OrderUpdate, OrderResponse
 from app.services.order_route_service import get_order_route_service
 from app.services.kafka_service import send_order_event
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 orders_bp = Blueprint('orders', __name__)
 
 @orders_bp.route('', methods=['GET'])
 @orders_bp.route('/', methods=['GET'])
 @jwt_required()
+@rate_limit(**RateLimits.API)
 def get_orders():
     """获取订单列表"""
     current_user_id = int(get_jwt_identity())
@@ -52,38 +57,52 @@ def get_orders():
 @orders_bp.route('', methods=['POST'])
 @orders_bp.route('/', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=30, window_seconds=60, key_func=lambda: f"create_order:{get_jwt_identity()}")
 def create_order():
-    """创建订单"""
+    """创建订单 - 使用 Schema 验证"""
     current_user_id = int(get_jwt_identity())
     data = request.get_json()
-    
-    # 验证必填字段
-    required_fields = ['customer_name', 'customer_phone']
-    for field in required_fields:
-        if not data.get(field):
-            return jsonify({'error': f'缺少必填字段: {field}'}), 400
     
     # 生成订单号
     order_number = f'ORD{datetime.now().strftime("%Y%m%d%H%M%S")}'
     
+    # 确保 order_number 在 data 中
+    data['order_number'] = order_number
+    
+    # 使用 Schema 验证
+    try:
+        order_data = OrderCreate(**data)
+    except ValidationError as e:
+        return jsonify({'error': '参数验证失败', 'details': e.errors()}), 400
+    
     order = Order(
         order_number=order_number,
-        customer_name=data['customer_name'],
-        customer_phone=data['customer_phone'],
-        pickup_node_id=data.get('pickup_node_id'),
-        delivery_node_id=data.get('delivery_node_id'),
-        cargo_name=data.get('cargo_name'),
-        cargo_type=data.get('cargo_type'),
-        weight=data.get('weight', 0),
-        volume=data.get('volume', 0),
-        priority=data.get('priority', 'normal'),
-        notes=data.get('notes') or data.get('remark'),
+        customer_name=order_data.customer_name,
+        customer_phone=order_data.customer_phone,
+        pickup_node_id=order_data.pickup_node_id,
+        delivery_node_id=order_data.delivery_node_id,
+        origin_name=order_data.origin_name,
+        destination_name=order_data.destination_name,
+        cargo_name=order_data.cargo_name,
+        cargo_type=order_data.cargo_type,
+        weight=order_data.weight,
+        volume=order_data.volume,
+        priority=order_data.priority,
+        notes=order_data.notes,
         status='pending',
         created_by=current_user_id
     )
     
     db.session.add(order)
     db.session.commit()
+    
+    # 同步到 Redis
+    try:
+        from app.services.redis_service import increment_order_count
+        increment_order_count('total')
+        print('[Redis] Order count updated')
+    except Exception as e:
+        print(f'[Redis] Sync failed: {e}')
     
     # 发送到 Kafka
     try:
@@ -92,8 +111,9 @@ def create_order():
         print(f'Kafka send failed: {e}')
     
     return jsonify({
+        'success': True,
         'message': '订单创建成功',
-        'order': order.to_dict()
+        'order': OrderResponse.model_validate(order).model_dump()
     }), 201
 
 @orders_bp.route('/<int:order_id>', methods=['GET'])
@@ -109,6 +129,7 @@ def get_order(order_id):
 
 @orders_bp.route('/<int:order_id>', methods=['PUT'])
 @jwt_required()
+@rate_limit(max_requests=20, window_seconds=60, key_func=lambda: f"update_order:{get_jwt_identity()}")
 def update_order(order_id):
     """更新订单"""
     order = Order.query.get(order_id)

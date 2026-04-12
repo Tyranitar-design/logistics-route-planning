@@ -10,8 +10,16 @@
         <el-switch v-model="autoRotate" @change="toggleAutoRotate" />
       </div>
       <div class="control-item">
-        <span class="control-label">显示轨迹</span>
-        <el-switch v-model="showTracks" @change="updateChart" />
+        <span class="control-label">轨迹飞线</span>
+        <el-switch v-model="showFlyLines" @change="updateChart" />
+      </div>
+      <div class="control-item">
+        <span class="control-label">粒子特效</span>
+        <el-switch v-model="showParticles" @change="updateChart" />
+      </div>
+      <div class="control-item">
+        <span class="control-label">🌟 节点脉冲</span>
+        <el-switch v-model="showPulse" @change="updateChart" />
       </div>
       <div class="control-item">
         <span class="control-label">🚚 车辆动画</span>
@@ -37,35 +45,15 @@
         <span class="legend-dot customer"></span>
         <span class="legend-text">客户点</span>
       </div>
-      <div class="legend-item">
-        <span class="legend-line"></span>
-        <span class="legend-text">运输轨迹</span>
+      <div class="legend-item" v-if="showFlyLines">
+        <span class="legend-line flyline"></span>
+        <span class="legend-text">飞线轨迹</span>
       </div>
-      <div class="legend-item" v-if="showVehicleAnimation">
-        <span class="legend-dot vehicle"></span>
-        <span class="legend-text">运输车辆</span>
+      <div class="legend-item" v-if="showParticles">
+        <span class="legend-dot particle"></span>
+        <span class="legend-text">粒子云</span>
       </div>
     </div>
-    
-    <!-- 车辆信息卡片 -->
-    <transition name="fade">
-      <div v-if="showVehicleAnimation && currentVehicleInfo" class="vehicle-info-card">
-        <div class="info-header">
-          <span class="info-icon">🚚</span>
-          <span class="info-name">{{ currentVehicleInfo.route }}</span>
-        </div>
-        <div class="info-content">
-          <div class="info-row">
-            <span class="info-label">进度</span>
-            <span class="info-value">{{ currentVehicleInfo.progress }}%</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">状态</span>
-            <span class="info-value highlight">运输中</span>
-          </div>
-        </div>
-      </div>
-    </transition>
     
     <!-- 节点信息卡片 -->
     <transition name="fade">
@@ -88,6 +76,10 @@
             <span class="info-label">🚛 车辆:</span>
             <span class="info-value">{{ selectedNode.vehicles || 0 }} 辆</span>
           </div>
+          <div class="info-row" v-if="selectedNode.capacity">
+            <span class="info-label">📊 容量:</span>
+            <span class="info-value">{{ selectedNode.capacity }}%</span>
+          </div>
         </div>
       </div>
     </transition>
@@ -98,60 +90,90 @@
         <span class="stat-value">{{ animatedStats.nodes }}</span>
         <span class="stat-label">节点总数</span>
       </div>
-      <div class="stat-item">
-        <span class="stat-value">{{ animatedStats.tracks }}</span>
-        <span class="stat-label">运输轨迹</span>
+      <div class="stat-item" v-if="showFlyLines">
+        <span class="stat-value">{{ animatedStats.routes }}</span>
+        <span class="stat-label">运输线路</span>
       </div>
-      <div class="stat-item">
-        <span class="stat-value">{{ animatedStats.distance }}</span>
-        <span class="stat-label">总里程(km)</span>
+      <div class="stat-item" v-if="showParticles">
+        <span class="stat-value">{{ particleCount.toLocaleString() }}</span>
+        <span class="stat-label">粒子数量</span>
       </div>
       <div class="stat-item" v-if="showVehicleAnimation">
         <span class="stat-value">{{ animatedVehicles }}</span>
         <span class="stat-label">运输车辆</span>
       </div>
     </div>
+    
+    <!-- 时间戳 -->
+    <div class="time-panel">
+      <span class="time-icon">⏰</span>
+      <span class="time-text">{{ currentTime }}</span>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
 import * as echarts from 'echarts'
 import 'echarts-gl'
-import { getNodes, getRoutes } from '@/api/nodes'
-import { ElMessage } from 'element-plus'
 
 // 图表引用
 const earthChart = ref(null)
 let chartInstance = null
+let animationFrameId = null
+let pulseAnimationId = null
 
 // 控制状态
 const autoRotate = ref(true)
-const showTracks = ref(true)
+const showFlyLines = ref(true)
+const showParticles = ref(true)
+const showPulse = ref(true)
 const selectedNode = ref(null)
 
 // 车辆动画状态
 const showVehicleAnimation = ref(false)
 const animationSpeed = ref(3)
 const animatedVehicles = ref(0)
-const currentVehicleInfo = ref(null)
-
-// 车辆数据
 const vehicleRoutes = ref([])
 const vehiclePositions = ref([])
-let animationFrameId = null
-let lastAnimationTime = 0
+
+// 粒子系统
+const particleCount = ref(3000)
+const particlesData = ref([])
+
+// 时间显示
+const currentTime = ref('')
 
 // 统计数据
 const animatedStats = reactive({
   nodes: 0,
-  tracks: 0,
-  distance: 0
+  routes: 0
 })
 
 // 节点数据
 const nodesData = ref([])
 const tracksData = ref([])
+
+// ==================== 纹理创建 ====================
+
+// 创建发光纹理
+const createGlowTexture = (color = '#00d4ff') => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 256
+  const ctx = canvas.getContext('2d')
+  
+  const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
+  gradient.addColorStop(0, color)
+  gradient.addColorStop(0.3, color.replace(')', ', 0.6)').replace('rgb', 'rgba'))
+  gradient.addColorStop(0.6, 'rgba(0, 212, 255, 0.2)')
+  gradient.addColorStop(1, 'rgba(0, 212, 255, 0)')
+  
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 256, 256)
+  
+  return canvas
+}
 
 // 创建网格纹理
 const createGridTexture = () => {
@@ -160,12 +182,12 @@ const createGridTexture = () => {
   canvas.height = 256
   const ctx = canvas.getContext('2d')
   
-  // 背景
+  // 深色背景
   ctx.fillStyle = '#0a1628'
   ctx.fillRect(0, 0, 512, 256)
   
   // 绘制经纬网格
-  ctx.strokeStyle = 'rgba(0, 212, 255, 0.15)'
+  ctx.strokeStyle = 'rgba(0, 212, 255, 0.12)'
   ctx.lineWidth = 0.5
   
   // 经线
@@ -185,26 +207,53 @@ const createGridTexture = () => {
   }
   
   // 中国区域高亮
-  ctx.fillStyle = 'rgba(0, 212, 255, 0.1)'
+  ctx.fillStyle = 'rgba(0, 212, 255, 0.08)'
   ctx.beginPath()
-  ctx.ellipse(380, 100, 50, 35, 0, 0, Math.PI * 2)
+  ctx.ellipse(380, 100, 55, 40, 0, 0, Math.PI * 2)
   ctx.fill()
-  ctx.strokeStyle = 'rgba(0, 212, 255, 0.3)'
+  ctx.strokeStyle = 'rgba(0, 212, 255, 0.25)'
   ctx.lineWidth = 1
   ctx.stroke()
   
   return canvas
 }
 
-// 初始化地球
+// 创建粒子纹理
+const createParticleTexture = () => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const ctx = canvas.getContext('2d')
+  
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+  gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.8)')
+  gradient.addColorStop(0.5, 'rgba(0, 212, 255, 0.4)')
+  gradient.addColorStop(1, 'rgba(0, 212, 255, 0)')
+  
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 64, 64)
+  
+  return canvas
+}
+
+// ==================== 初始化 ====================
+
 const initEarth = async () => {
   chartInstance = echarts.init(earthChart.value)
   
   // 加载数据
   await loadData()
   
+  // 生成粒子数据
+  generateParticles()
+  
   // 初始化车辆路线
   initVehicleRoutes()
+  
+  // 更新时间
+  updateTime()
+  setInterval(updateTime, 1000)
   
   // 更新图表
   updateChart()
@@ -218,195 +267,19 @@ const initEarth = async () => {
   
   // 动画数字
   animateStats()
-}
-
-// 初始化车辆路线
-const initVehicleRoutes = () => {
-  if (tracksData.value.length === 0) return
   
-  // 选择几条主要路线作为车辆动画
-  const routeCount = Math.min(5, tracksData.value.length)
-  vehicleRoutes.value = tracksData.value.slice(0, routeCount).map((track, index) => ({
-    id: index,
-    from: track.from,
-    to: track.to,
-    progress: Math.random(), // 初始进度随机
-    speed: 0.3 + Math.random() * 0.4, // 不同车辆速度不同
-    fromNode: nodesData.value.find(n => 
-      Math.abs(n.lng - track.from?.lng) < 1 && Math.abs(n.lat - track.from?.lat) < 1
-    ),
-    toNode: nodesData.value.find(n => 
-      Math.abs(n.lng - track.to?.lng) < 1 && Math.abs(n.lat - track.to?.lat) < 1
-    )
-  }))
-  
-  animatedVehicles.value = vehicleRoutes.value.length
-}
-
-// 更新图表
-const updateChart = () => {
-  if (!chartInstance) return
-  
-  // 构建散点数据
-  const scatterData = buildScatterData()
-  
-  // 构建轨迹数据
-  const linesData = buildLinesData()
-  
-  // 构建车辆数据
-  const vehicleData = buildVehicleData()
-  
-  const option = {
-    backgroundColor: 'transparent',
-    globe: {
-      baseColor: '#0a1628',
-      shading: 'color',
-      environment: 'auto',
-      light: {
-        ambient: { intensity: 0.6 },
-        main: { intensity: 1.2 }
-      },
-      viewControl: {
-        autoRotate: autoRotate.value && !showVehicleAnimation.value,
-        autoRotateSpeed: 3,
-        autoRotateAfterStill: 3,
-        distance: 180,
-        alpha: 30,
-        beta: 0,
-        minDistance: 100,
-        maxDistance: 400,
-        targetCoord: [104, 35]
-      },
-      atmosphere: {
-        show: true,
-        offset: 5,
-        color: '#00d4ff'
-      },
-      globeRadius: 100,
-      layers: [{
-        type: 'blend',
-        blendTo: 'emission',
-        texture: createGridTexture()
-      }]
-    },
-    series: [
-      // 节点散点
-      {
-        type: 'scatter3D',
-        coordinateSystem: 'globe',
-        blendMode: 'lighter',
-        symbolSize: (val) => Math.max(val[2] / 3, 8),
-        itemStyle: {
-          color: (params) => {
-            const colors = {
-              'warehouse': '#00d4ff',
-              'station': '#00ff88',
-              'customer': '#ff6b6b'
-            }
-            return colors[params.data.type] || '#00d4ff'
-          },
-          opacity: 0.9
-        },
-        label: {
-          show: false,
-          formatter: '{b}',
-          position: 'top',
-          color: '#fff',
-          fontSize: 12
-        },
-        emphasis: {
-          label: { show: true }
-        },
-        data: scatterData
-      },
-      // 运输轨迹
-      {
-        type: 'lines3D',
-        coordinateSystem: 'globe',
-        show: showTracks.value,
-        blendMode: 'lighter',
-        effect: {
-          show: true,
-          period: 4,
-          trailLength: 0.15,
-          trailWidth: 2,
-          trailColor: '#00ff88'
-        },
-        lineStyle: {
-          width: 2,
-          color: 'rgb(0, 212, 255)',
-          opacity: 0.4
-        },
-        data: linesData
-      },
-      // 发光效果层
-      {
-        type: 'scatter3D',
-        coordinateSystem: 'globe',
-        blendMode: 'lighter',
-        symbolSize: (val) => Math.max(val[2] / 2, 12),
-        itemStyle: {
-          color: 'rgba(0, 212, 255, 0.3)',
-          opacity: 0.3
-        },
-        data: scatterData.map(d => ({ ...d, value: [...d.value] }))
-      },
-      // 车辆层（仅在动画开启时显示）
-      ...(showVehicleAnimation.value && vehicleData.length > 0 ? [
-        {
-          type: 'scatter3D',
-          coordinateSystem: 'globe',
-          symbol: 'circle',
-          symbolSize: 15,
-          itemStyle: {
-            color: '#ffcc00',
-            opacity: 1,
-            borderWidth: 2,
-            borderColor: '#fff'
-          },
-          data: vehicleData
-        },
-        // 车辆发光
-        {
-          type: 'scatter3D',
-          coordinateSystem: 'globe',
-          symbol: 'circle',
-          symbolSize: 25,
-          itemStyle: {
-            color: 'rgba(255, 204, 0, 0.4)',
-            opacity: 0.6
-          },
-          data: vehicleData
-        }
-      ] : [])
-    ]
+  // 脉冲动画
+  if (showPulse.value) {
+    startPulseAnimation()
   }
-  
-  chartInstance.setOption(option)
 }
 
-// 构建车辆数据
-const buildVehicleData = () => {
-  return vehiclePositions.value.map(pos => [pos.lng, pos.lat, 20])
-}
+// ==================== 数据 ====================
 
-// 加载数据
 const loadData = async () => {
   try {
     nodesData.value = generateMockNodes()
     tracksData.value = generateMockRoutes()
-    
-    const [nodesRes, routesRes] = await Promise.all([
-      getNodes().catch(() => null),
-      getRoutes().catch(() => null)
-    ])
-    
-    if (nodesRes?.nodes?.length > 0) {
-      nodesData.value = nodesRes.nodes
-    }
-    if (routesRes?.routes?.length > 0) {
-      tracksData.value = routesRes.routes
-    }
   } catch (e) {
     console.error('加载数据失败', e)
     nodesData.value = generateMockNodes()
@@ -416,45 +289,56 @@ const loadData = async () => {
 
 // 生成模拟节点
 const generateMockNodes = () => [
-  { name: '北京总部', lng: 116.46, lat: 39.92, type: 'warehouse', orders: 156, vehicles: 12, status: '正常' },
-  { name: '上海仓库', lng: 121.48, lat: 31.22, type: 'warehouse', orders: 189, vehicles: 15, status: '正常' },
-  { name: '广州配送中心', lng: 113.23, lat: 23.16, type: 'station', orders: 98, vehicles: 8, status: '繁忙' },
-  { name: '深圳站点', lng: 114.07, lat: 22.62, type: 'station', orders: 67, vehicles: 5, status: '正常' },
-  { name: '杭州中心', lng: 120.19, lat: 30.26, type: 'station', orders: 112, vehicles: 9, status: '正常' },
-  { name: '南京仓库', lng: 118.78, lat: 32.04, type: 'warehouse', orders: 134, vehicles: 11, status: '正常' },
-  { name: '成都站点', lng: 104.06, lat: 30.67, type: 'station', orders: 78, vehicles: 6, status: '维护中' },
-  { name: '武汉中心', lng: 114.31, lat: 30.52, type: 'station', orders: 89, vehicles: 7, status: '正常' },
-  { name: '西安仓库', lng: 108.95, lat: 34.27, type: 'warehouse', orders: 56, vehicles: 4, status: '正常' },
-  { name: '重庆配送', lng: 106.55, lat: 29.56, type: 'station', orders: 71, vehicles: 5, status: '正常' },
-  { name: '天津站点', lng: 117.20, lat: 39.13, type: 'station', orders: 45, vehicles: 3, status: '正常' },
-  { name: '苏州中心', lng: 120.62, lat: 31.32, type: 'customer', orders: 23, vehicles: 0, status: '正常' },
-  { name: '青岛仓库', lng: 120.38, lat: 36.07, type: 'warehouse', orders: 87, vehicles: 6, status: '正常' },
-  { name: '厦门站点', lng: 118.10, lat: 24.46, type: 'station', orders: 34, vehicles: 3, status: '正常' },
-  { name: '长沙中心', lng: 112.94, lat: 28.23, type: 'station', orders: 52, vehicles: 4, status: '正常' },
-  { name: '郑州仓库', lng: 113.65, lat: 34.76, type: 'warehouse', orders: 63, vehicles: 5, status: '正常' },
-  { name: '沈阳站点', lng: 123.38, lat: 41.80, type: 'station', orders: 41, vehicles: 3, status: '正常' },
-  { name: '哈尔滨仓库', lng: 126.63, lat: 45.75, type: 'warehouse', orders: 38, vehicles: 3, status: '正常' },
-  { name: '昆明中心', lng: 102.73, lat: 25.04, type: 'station', orders: 29, vehicles: 2, status: '正常' },
-  { name: '乌鲁木齐', lng: 87.62, lat: 43.83, type: 'station', orders: 15, vehicles: 1, status: '正常' }
+  { name: '北京总部', lng: 116.46, lat: 39.92, type: 'warehouse', orders: 156, vehicles: 12, status: '正常', capacity: 78 },
+  { name: '上海仓库', lng: 121.48, lat: 31.22, type: 'warehouse', orders: 189, vehicles: 15, status: '正常', capacity: 85 },
+  { name: '广州配送中心', lng: 113.23, lat: 23.16, type: 'station', orders: 98, vehicles: 8, status: '繁忙', capacity: 92 },
+  { name: '深圳站点', lng: 114.07, lat: 22.62, type: 'station', orders: 67, vehicles: 5, status: '正常', capacity: 65 },
+  { name: '杭州中心', lng: 120.19, lat: 30.26, type: 'station', orders: 112, vehicles: 9, status: '正常', capacity: 71 },
+  { name: '南京仓库', lng: 118.78, lat: 32.04, type: 'warehouse', orders: 134, vehicles: 11, status: '正常', capacity: 68 },
+  { name: '成都站点', lng: 104.06, lat: 30.67, type: 'station', orders: 78, vehicles: 6, status: '维护中', capacity: 45 },
+  { name: '武汉中心', lng: 114.31, lat: 30.52, type: 'station', orders: 89, vehicles: 7, status: '正常', capacity: 72 },
+  { name: '西安仓库', lng: 108.95, lat: 34.27, type: 'warehouse', orders: 56, vehicles: 4, status: '正常', capacity: 55 },
+  { name: '重庆配送', lng: 106.55, lat: 29.56, type: 'station', orders: 71, vehicles: 5, status: '正常', capacity: 63 },
+  { name: '天津站点', lng: 117.20, lat: 39.13, type: 'station', orders: 45, vehicles: 3, status: '正常', capacity: 48 },
+  { name: '苏州中心', lng: 120.62, lat: 31.32, type: 'customer', orders: 23, vehicles: 0, status: '正常', capacity: 30 },
+  { name: '青岛仓库', lng: 120.38, lat: 36.07, type: 'warehouse', orders: 87, vehicles: 6, status: '正常', capacity: 61 },
+  { name: '厦门站点', lng: 118.10, lat: 24.46, type: 'station', orders: 34, vehicles: 3, status: '正常', capacity: 42 },
+  { name: '长沙中心', lng: 112.94, lat: 28.23, type: 'station', orders: 52, vehicles: 4, status: '正常', capacity: 58 },
+  { name: '郑州仓库', lng: 113.65, lat: 34.76, type: 'warehouse', orders: 63, vehicles: 5, status: '正常', capacity: 54 },
+  { name: '沈阳站点', lng: 123.38, lat: 41.80, type: 'station', orders: 41, vehicles: 3, status: '正常', capacity: 47 },
+  { name: '哈尔滨', lng: 126.63, lat: 45.75, type: 'warehouse', orders: 38, vehicles: 3, status: '正常', capacity: 40 },
+  { name: '昆明中心', lng: 102.73, lat: 25.04, type: 'station', orders: 29, vehicles: 2, status: '正常', capacity: 35 },
+  { name: '乌鲁木齐', lng: 87.62, lat: 43.83, type: 'station', orders: 15, vehicles: 1, status: '正常', capacity: 25 },
+  { name: '福州站点', lng: 119.30, lat: 26.08, type: 'station', orders: 31, vehicles: 2, status: '正常', capacity: 38 },
+  { name: '济南仓库', lng: 116.99, lat: 36.67, type: 'warehouse', orders: 49, vehicles: 4, status: '正常', capacity: 52 },
+  { name: '太原中心', lng: 112.55, lat: 37.87, type: 'station', orders: 33, vehicles: 2, status: '正常', capacity: 41 },
+  { name: '南宁站点', lng: 108.33, lat: 22.84, type: 'station', orders: 27, vehicles: 2, status: '正常', capacity: 33 },
+  { name: '贵阳仓库', lng: 106.71, lat: 26.60, type: 'warehouse', orders: 35, vehicles: 3, status: '正常', capacity: 44 },
+  { name: '拉萨中心', lng: 91.12, lat: 29.65, type: 'station', orders: 8, vehicles: 1, status: '正常', capacity: 15 },
+  { name: '兰州站点', lng: 103.83, lat: 36.06, type: 'station', orders: 22, vehicles: 2, status: '正常', capacity: 28 },
+  { name: '海口网点', lng: 110.35, lat: 20.02, type: 'customer', orders: 12, vehicles: 0, status: '正常', capacity: 20 },
+  { name: '石家庄', lng: 114.48, lat: 38.03, type: 'warehouse', orders: 44, vehicles: 3, status: '正常', capacity: 49 },
+  { name: '长春仓库', lng: 125.32, lat: 43.82, type: 'warehouse', orders: 36, vehicles: 3, status: '正常', capacity: 43 }
 ]
 
 // 生成模拟路线
 const generateMockRoutes = () => {
   const routes = []
-  const nodes = nodesData.value.length > 0 ? nodesData.value : generateMockNodes()
-  
   const mainLines = [
-    [0, 1], [0, 2], [1, 2], [1, 4], [2, 3],
-    [5, 0], [5, 7], [6, 9], [8, 0], [10, 0],
+    [0, 1], [0, 2], [0, 3], [1, 4], [1, 11],
+    [2, 3], [3, 13], [4, 11], [5, 0], [5, 7],
+    [6, 9], [7, 14], [8, 0], [9, 18], [10, 0],
     [12, 1], [12, 4], [13, 2], [14, 7], [15, 7],
-    [16, 0], [17, 16], [18, 6], [19, 8]
+    [16, 0], [17, 16], [18, 6], [19, 8], [20, 13],
+    [21, 10], [22, 8], [23, 2], [24, 6], [25, 19],
+    [26, 8], [27, 2], [28, 10], [29, 17]
   ]
   
   mainLines.forEach(([from, to]) => {
-    if (nodes[from] && nodes[to]) {
+    if (nodesData.value[from] && nodesData.value[to]) {
       routes.push({
-        from: { lng: nodes[from].lng, lat: nodes[from].lat },
-        to: { lng: nodes[to].lng, lat: nodes[to].lat }
+        from: { lng: nodesData.value[from].lng, lat: nodesData.value[from].lat },
+        to: { lng: nodesData.value[to].lng, lat: nodesData.value[to].lat }
       })
     }
   })
@@ -462,12 +346,239 @@ const generateMockRoutes = () => {
   return routes
 }
 
+// 生成粒子数据
+const generateParticles = () => {
+  const particles = []
+  for (let i = 0; i < particleCount.value; i++) {
+    // 随机球面坐标
+    const phi = Math.random() * Math.PI * 2
+    const theta = Math.random() * Math.PI
+    const r = 100 + Math.random() * 5
+    
+    const x = r * Math.sin(theta) * Math.cos(phi)
+    const y = r * Math.cos(theta)
+    const z = r * Math.sin(theta) * Math.sin(phi)
+    
+    particles.push([x, y, z, Math.random() * 0.5 + 0.5])
+  }
+  particlesData.value = particles
+}
+
+// 初始化车辆路线
+const initVehicleRoutes = () => {
+  if (tracksData.value.length === 0) return
+  
+  const routeCount = Math.min(8, tracksData.value.length)
+  vehicleRoutes.value = tracksData.value.slice(0, routeCount).map((track, index) => ({
+    id: index,
+    from: track.from,
+    to: track.to,
+    progress: Math.random(),
+    speed: 0.2 + Math.random() * 0.3
+  }))
+  
+  animatedVehicles.value = vehicleRoutes.value.length
+}
+
+// ==================== 图表更新 ====================
+
+const updateChart = () => {
+  if (!chartInstance) return
+  
+  // 停止所有动画
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+  
+  const option = buildOption()
+  chartInstance.setOption(option, { notMerge: true })
+  
+  // 如果开启脉冲，启动动画
+  if (showPulse.value || showVehicleAnimation.value) {
+    startAnimationLoop()
+  }
+}
+
+const buildOption = () => {
+  const scatterData = buildScatterData()
+  const linesData = buildLinesData()
+  const vehicleData = buildVehicleData()
+  
+  return {
+    backgroundColor: 'transparent',
+    animation: true,
+    animationDuration: 3000,
+    globe: {
+      baseColor: '#0a1628',
+      shading: 'color',
+      environment: 'auto',
+      light: {
+        ambient: { intensity: 0.5 },
+        main: { intensity: 1.0 }
+      },
+      viewControl: {
+        autoRotate: autoRotate.value && !showVehicleAnimation.value,
+        autoRotateSpeed: 2,
+        autoRotateAfterStill: 3,
+        distance: 160,
+        alpha: 25,
+        beta: 0,
+        minDistance: 100,
+        maxDistance: 350,
+        targetCoord: [105, 36]
+      },
+      atmosphere: {
+        show: true,
+        offset: 8,
+        color: '#00d4ff',
+        glowPower: 0.3
+      },
+      globeRadius: 100,
+      layers: [{
+        type: 'blend',
+        blendTo: 'emission',
+        texture: createGridTexture()
+      }]
+    },
+    series: [
+      // 粒子云层（最底层）
+      ...(showParticles.value ? [{
+        type: 'scatter3D',
+        coordinateSystem: 'globe',
+        blendMode: 'lighter',
+        symbol: 'circle',
+        symbolSize: 3,
+        itemStyle: {
+          color: 'rgba(0, 212, 255, 0.15)',
+          opacity: 0.4
+        },
+        data: particlesData.value,
+        silent: true
+      }] : []),
+      
+      // 节点脉冲光环层
+      ...(showPulse.value ? [{
+        type: 'scatter3D',
+        coordinateSystem: 'globe',
+        blendMode: 'lighter',
+        symbol: 'circle',
+        symbolSize: (val) => Math.max(val[2] / 1.5 + 15, 20),
+        itemStyle: {
+          color: (params) => {
+            const colors = {
+              'warehouse': 'rgba(0, 212, 255, 0.3)',
+              'station': 'rgba(0, 255, 136, 0.25)',
+              'customer': 'rgba(255, 107, 107, 0.2)'
+            }
+            return colors[params.data.type] || 'rgba(0, 212, 255, 0.3)'
+          },
+          opacity: 0.6
+        },
+        data: scatterData.map(d => ({ ...d, value: [...d.value] })),
+        silent: true
+      }] : []),
+      
+      // 主节点层
+      {
+        type: 'scatter3D',
+        coordinateSystem: 'globe',
+        blendMode: 'lighter',
+        symbolSize: (val) => Math.max(val[2] / 4, 10),
+        itemStyle: {
+          color: (params) => {
+            const colors = {
+              'warehouse': '#00d4ff',
+              'station': '#00ff88',
+              'customer': '#ff6b6b'
+            }
+            return colors[params.data.type] || '#00d4ff'
+          },
+          opacity: 1,
+          borderWidth: 2,
+          borderColor: 'rgba(255, 255, 255, 0.5)'
+        },
+        label: {
+          show: false,
+          formatter: '{b}',
+          position: 'top',
+          color: '#fff',
+          fontSize: 11,
+          distance: 5
+        },
+        emphasis: {
+          scale: 1.3,
+          label: { show: true }
+        },
+        data: scatterData
+      },
+      
+      // 飞线轨迹层
+      ...(showFlyLines.value ? [{
+        type: 'lines3D',
+        coordinateSystem: 'globe',
+        blendMode: 'lighter',
+        effect: {
+          show: true,
+          period: 3,
+          trailLength: 0.4,
+          trailWidth: 3,
+          trailColor: 'rgba(0, 255, 136, 0.8)',
+          trailOpacity: 0.6
+        },
+        lineStyle: {
+          width: 1.5,
+          color: 'rgb(0, 212, 255)',
+          opacity: 0.5
+        },
+        data: linesData
+      }] : []),
+      
+      // 车辆动画层
+      ...(showVehicleAnimation.value && vehicleData.length > 0 ? [
+        {
+          type: 'scatter3D',
+          coordinateSystem: 'globe',
+          symbol: 'circle',
+          symbolSize: 18,
+          itemStyle: {
+            color: '#ffcc00',
+            opacity: 1,
+            borderWidth: 3,
+            borderColor: '#fff',
+            shadowBlur: 20,
+            shadowColor: '#ffcc00'
+          },
+          data: vehicleData,
+          silent: true
+        },
+        // 车辆光晕
+        {
+          type: 'scatter3D',
+          coordinateSystem: 'globe',
+          symbol: 'circle',
+          symbolSize: 30,
+          itemStyle: {
+            color: 'rgba(255, 204, 0, 0.3)',
+            opacity: 0.7
+          },
+          data: vehicleData,
+          silent: true
+        }
+      ] : [])
+    ]
+  }
+}
+
 // 构建散点数据
 const buildScatterData = () => {
   return nodesData.value.map(node => ({
     name: node.name,
     value: [node.lng, node.lat, node.orders || 10],
-    type: node.type
+    type: node.type,
+    itemStyle: {
+      color: node.capacity > 80 ? '#ff6b6b' : undefined
+    }
   }))
 }
 
@@ -482,15 +593,118 @@ const buildLinesData = () => {
   })).filter(track => track.coords[0][0] !== 0 && track.coords[1][0] !== 0)
 }
 
+// 构建车辆数据
+const buildVehicleData = () => {
+  return vehiclePositions.value.map(pos => [pos.lng, pos.lat, 15])
+}
+
+// ==================== 动画 ====================
+
+const startAnimationLoop = () => {
+  const animate = () => {
+    if (!showPulse.value && !showVehicleAnimation.value) {
+      animationFrameId = null
+      return
+    }
+    
+    // 更新脉冲
+    if (showPulse.value) {
+      updatePulse()
+    }
+    
+    // 更新车辆
+    if (showVehicleAnimation.value) {
+      updateVehicles()
+    }
+    
+    animationFrameId = requestAnimationFrame(animate)
+  }
+  
+  if (!animationFrameId) {
+    animationFrameId = requestAnimationFrame(animate)
+  }
+}
+
+let pulsePhase = 0
+const updatePulse = () => {
+  pulsePhase += 0.02
+  
+  const pulseData = nodesData.value.map(node => {
+    const size = Math.max(node.orders / 4, 10)
+    const scale = 1 + Math.sin(pulsePhase + node.lng) * 0.2
+    return {
+      name: node.name,
+      value: [node.lng, node.lat, node.orders || 10, size * scale],
+      type: node.type
+    }
+  })
+  
+  chartInstance.setOption({
+    series: [
+      { seriesIndex: showParticles.value ? 1 : 0 },
+      { seriesIndex: showParticles.value ? 2 : 1 },
+      { seriesIndex: showParticles.value ? 3 : 2 },
+      { seriesIndex: showParticles.value ? 4 : 3 },
+      {
+        seriesIndex: showParticles.value ? 5 : 4,
+        data: pulseData
+      }
+    ]
+  })
+}
+
+let lastTime = 0
+const updateVehicles = () => {
+  const now = performance.now()
+  const delta = (now - lastTime) / 1000
+  lastTime = now
+  
+  if (delta > 100) return
+  
+  vehicleRoutes.value.forEach(route => {
+    route.progress += route.speed * delta * animationSpeed.value * 0.008
+    if (route.progress > 1) route.progress = 0
+  })
+  
+  vehiclePositions.value = vehicleRoutes.value.map(route => {
+    const lng = route.from.lng + (route.to.lng - route.from.lng) * route.progress
+    const lat = route.from.lat + (route.to.lat - route.from.lat) * route.progress
+    return { lng, lat }
+  })
+  
+  const vehicleData = buildVehicleData()
+  
+  // 找到车辆层的索引
+  let vehicleLayerIndex = 0
+  if (showParticles.value) vehicleLayerIndex++
+  if (showPulse.value) vehicleLayerIndex++
+  vehicleLayerIndex++ // 节点层
+  if (showFlyLines.value) vehicleLayerIndex++
+  
+  chartInstance.setOption({
+    series: [
+      { seriesIndex: vehicleLayerIndex, data: vehicleData },
+      { seriesIndex: vehicleLayerIndex + 1, data: vehicleData }
+    ]
+  })
+}
+
+const startPulseAnimation = () => {
+  if (pulseAnimationId) return
+  pulseAnimationId = setInterval(() => {
+    if (showPulse.value && chartInstance) {
+      updatePulse()
+    }
+  }, 50)
+}
+
 // 动画数字
 const animateStats = () => {
   const targetNodes = nodesData.value.length
-  const targetTracks = tracksData.value.length
-  const targetDistance = Math.round(tracksData.value.length * 850)
+  const targetRoutes = tracksData.value.length
   
   animateValue('nodes', targetNodes)
-  animateValue('tracks', targetTracks)
-  animateValue('distance', targetDistance)
+  animateValue('routes', targetRoutes)
 }
 
 const animateValue = (key, target) => {
@@ -510,76 +724,31 @@ const animateValue = (key, target) => {
   }, 16)
 }
 
-// 控制方法
+// 更新时间的函数
+const updateTime = () => {
+  const now = new Date()
+  const hours = String(now.getHours()).padStart(2, '0')
+  const minutes = String(now.getMinutes()).padStart(2, '0')
+  const seconds = String(now.getSeconds()).padStart(2, '0')
+  currentTime.value = `${hours}:${minutes}:${seconds}`
+}
+
+// ==================== 控制方法 ====================
+
 const toggleAutoRotate = () => {
   updateChart()
 }
 
 const toggleVehicleAnimation = () => {
   if (showVehicleAnimation.value) {
-    startVehicleAnimation()
-  } else {
-    stopVehicleAnimation()
+    lastTime = performance.now()
+    startAnimationLoop()
   }
   updateChart()
 }
 
-// 车辆动画
-const startVehicleAnimation = () => {
-  lastAnimationTime = performance.now()
-  animateVehicles()
-}
+// ==================== 辅助方法 ====================
 
-const stopVehicleAnimation = () => {
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
-  vehiclePositions.value = []
-  currentVehicleInfo.value = null
-}
-
-const animateVehicles = () => {
-  const now = performance.now()
-  const delta = (now - lastAnimationTime) / 1000
-  lastAnimationTime = now
-  
-  // 更新每个车辆的位置
-  vehiclePositions.value = vehicleRoutes.value.map(route => {
-    // 更新进度
-    route.progress += route.speed * delta * animationSpeed.value * 0.01
-    
-    // 循环
-    if (route.progress > 1) {
-      route.progress = 0
-    }
-    
-    // 插值计算位置
-    const lng = route.from.lng + (route.to.lng - route.from.lng) * route.progress
-    const lat = route.from.lat + (route.to.lat - route.from.lat) * route.progress
-    
-    return { lng, lat, route }
-  })
-  
-  // 更新当前车辆信息
-  if (vehicleRoutes.value.length > 0) {
-    const firstRoute = vehicleRoutes.value[0]
-    currentVehicleInfo.value = {
-      route: `${firstRoute.fromNode?.name || '起点'} → ${firstRoute.toNode?.name || '终点'}`,
-      progress: Math.round(firstRoute.progress * 100)
-    }
-  }
-  
-  // 更新图表
-  updateChart()
-  
-  // 继续动画
-  if (showVehicleAnimation.value) {
-    animationFrameId = requestAnimationFrame(animateVehicles)
-  }
-}
-
-// 辅助方法
 const getNodeIcon = (type) => ({
   'warehouse': '🏭',
   'station': '🚛',
@@ -599,13 +768,16 @@ const handleResize = () => {
   }
 }
 
+// ==================== 生命周期 ====================
+
 onMounted(() => {
   initEarth()
   window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
-  stopVehicleAnimation()
+  if (animationFrameId) cancelAnimationFrame(animationFrameId)
+  if (pulseAnimationId) clearInterval(pulseAnimationId)
   if (chartInstance) {
     chartInstance.dispose()
   }
@@ -618,13 +790,13 @@ onUnmounted(() => {
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 500px;
+  min-height: 600px;
 }
 
 .earth-chart {
   width: 100%;
   height: 100%;
-  min-height: 500px;
+  min-height: 600px;
 }
 
 /* 控制面板 */
@@ -632,33 +804,39 @@ onUnmounted(() => {
   position: absolute;
   top: 12px;
   left: 12px;
-  padding: 12px 16px;
-  background: rgba(10, 14, 39, 0.85);
-  border: 1px solid rgba(0, 212, 255, 0.3);
-  border-radius: 10px;
-  backdrop-filter: blur(10px);
+  padding: 14px 18px;
+  background: rgba(10, 14, 39, 0.88);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
   z-index: 10;
+  min-width: 160px;
 }
 
 .panel-title {
   font-size: 14px;
   font-weight: 600;
   color: #00d4ff;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
   border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+  text-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
 }
 
 .control-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.control-item:last-child {
+  margin-bottom: 0;
 }
 
 .control-label {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* 图例 */
@@ -666,19 +844,19 @@ onUnmounted(() => {
   position: absolute;
   top: 12px;
   right: 12px;
-  padding: 12px 16px;
-  background: rgba(10, 14, 39, 0.85);
-  border: 1px solid rgba(0, 212, 255, 0.3);
-  border-radius: 10px;
-  backdrop-filter: blur(10px);
+  padding: 14px 18px;
+  background: rgba(10, 14, 39, 0.88);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
   z-index: 10;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .legend-item:last-child {
@@ -686,35 +864,53 @@ onUnmounted(() => {
 }
 
 .legend-dot {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
 }
 
 .legend-dot.warehouse {
   background: #00d4ff;
-  box-shadow: 0 0 8px rgba(0, 212, 255, 0.5);
+  color: #00d4ff;
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.6);
 }
 
 .legend-dot.station {
   background: #00ff88;
-  box-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
+  color: #00ff88;
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.6);
 }
 
 .legend-dot.customer {
   background: #ff6b6b;
-  box-shadow: 0 0 8px rgba(255, 107, 107, 0.5);
+  color: #ff6b6b;
+  box-shadow: 0 0 10px rgba(255, 107, 107, 0.6);
 }
 
-.legend-dot.vehicle {
-  background: #ffcc00;
-  box-shadow: 0 0 8px rgba(255, 204, 0, 0.5);
+.legend-dot.particle {
+  background: linear-gradient(135deg, #00d4ff, #00ff88);
+  animation: particleGlow 2s ease-in-out infinite;
 }
 
 .legend-line {
-  width: 20px;
-  height: 2px;
+  width: 24px;
+  height: 3px;
   background: linear-gradient(90deg, rgba(0, 212, 255, 0.8), rgba(0, 255, 136, 0.8));
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+
+.legend-line::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.8), transparent);
+  animation: flyline 1.5s linear infinite;
 }
 
 .legend-text {
@@ -723,43 +919,35 @@ onUnmounted(() => {
 }
 
 /* 信息卡片 */
-.info-card,
-.vehicle-info-card {
+.info-card {
   position: absolute;
-  bottom: 80px;
+  bottom: 90px;
   left: 12px;
-  width: 220px;
+  width: 240px;
   padding: 16px;
-  background: rgba(10, 14, 39, 0.9);
-  border: 1px solid rgba(0, 212, 255, 0.4);
-  border-radius: 12px;
-  backdrop-filter: blur(10px);
+  background: rgba(10, 14, 39, 0.92);
+  border: 1px solid rgba(0, 212, 255, 0.45);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
   z-index: 10;
-}
-
-.vehicle-info-card {
-  bottom: 80px;
-  left: auto;
-  right: 12px;
-  border-color: rgba(255, 204, 0, 0.4);
 }
 
 .info-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
   border-bottom: 1px solid rgba(0, 212, 255, 0.2);
 }
 
 .info-icon {
-  font-size: 20px;
+  font-size: 22px;
 }
 
 .info-name {
   flex: 1;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: #fff;
 }
@@ -767,7 +955,7 @@ onUnmounted(() => {
 .info-content {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .info-row {
@@ -785,24 +973,19 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.info-value.highlight {
-  color: #00ff88;
-  font-weight: 600;
-}
-
 /* 统计面板 */
 .stats-panel {
   position: absolute;
-  bottom: 12px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 24px;
-  padding: 12px 24px;
-  background: rgba(10, 14, 39, 0.85);
-  border: 1px solid rgba(0, 212, 255, 0.3);
-  border-radius: 30px;
-  backdrop-filter: blur(10px);
+  gap: 28px;
+  padding: 14px 28px;
+  background: rgba(10, 14, 39, 0.88);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 35px;
+  backdrop-filter: blur(12px);
   z-index: 10;
 }
 
@@ -813,19 +996,60 @@ onUnmounted(() => {
 }
 
 .stat-value {
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 700;
   color: #00d4ff;
-  text-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+  text-shadow: 0 0 15px rgba(0, 212, 255, 0.4);
 }
 
 .stat-label {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.5);
-  margin-top: 4px;
+  margin-top: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 时间面板 */
+.time-panel {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: rgba(10, 14, 39, 0.88);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 20px;
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.time-icon {
+  font-size: 14px;
+}
+
+.time-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #00d4ff;
+  font-family: 'Monaco', 'Consolas', monospace;
+  letter-spacing: 1px;
 }
 
 /* 动画 */
+@keyframes particleGlow {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+@keyframes flyline {
+  0% { left: -100%; }
+  100% { left: 200%; }
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.3s, transform 0.3s;
@@ -849,5 +1073,23 @@ onUnmounted(() => {
 
 :deep(.el-slider__button) {
   border-color: #00d4ff;
+}
+
+:deep(.el-tag--success) {
+  background-color: rgba(0, 255, 136, 0.2);
+  border-color: rgba(0, 255, 136, 0.4);
+  color: #00ff88;
+}
+
+:deep(.el-tag--warning) {
+  background-color: rgba(255, 170, 0, 0.2);
+  border-color: rgba(255, 170, 0, 0.4);
+  color: #ffaa00;
+}
+
+:deep(.el-tag--danger) {
+  background-color: rgba(255, 107, 107, 0.2);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: #ff6b6b;
 }
 </style>

@@ -9,6 +9,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.analytics_service import get_analytics_service
 import logging
 import io
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ analytics_bp = Blueprint('analytics', __name__)
 
 @analytics_bp.route('/dashboard', methods=['GET'])
 @jwt_required()
+@rate_limit(**RateLimits.API)
 def get_dashboard():
     """获取仪表盘数据"""
     try:

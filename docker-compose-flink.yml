@@ -1,0 +1,75 @@
+# Apache Flink 集群配置
+# 物流路径规划系统 - 实时流处理引擎
+
+services:
+  # ==================== Flink JobManager ====================
+  flink-jobmanager:
+    image: flink:1.18-scala_2.12
+    container_name: logistics-flink-jobmanager
+    ports:
+      - "8083:8081"   # Flink Web UI
+      - "6123:6123"   # RPC
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - JOB_MANAGER_RPC_PORT=6123
+    command: jobmanager
+    volumes:
+      - flink-jobmanager-data:/opt/flink
+      - ./flink/jobs:/opt/flink/usrlib
+      - ./flink/checkpoints:/opt/flink/checkpoints
+    networks:
+      - logistics-bigdata-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ==================== Flink TaskManager ====================
+  flink-taskmanager:
+    image: flink:1.18-scala_2.12
+    container_name: logistics-flink-taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - JOB_MANAGER_RPC_PORT=6123
+    command: taskmanager
+    volumes:
+      - ./flink/jobs:/opt/flink/usrlib
+      - ./flink/checkpoints:/opt/flink/checkpoints
+    networks:
+      - logistics-bigdata-network
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ==================== 数据卷 ====================
+volumes:
+  flink-jobmanager-data:
+    driver: local
+
+# ==================== 网络 ====================
+networks:
+  logistics-bigdata-network:
+    external: true
+
+# ==================== 使用说明 ====================
+#
+# 启动 Flink 集群：
+#   docker-compose -f docker-compose-flink.yml up -d
+#
+# 查看 Flink Web UI：
+#   http://localhost:8083
+#
+# 提交 Flink 作业（PyFlink）：
+#   docker exec -it logistics-flink-jobmanager flink run -py /opt/flink/usrlib/your_job.py
+#
+# 查看 Flink 日志：
+#   docker logs -f logistics-flink-jobmanager
+#   docker logs -f logistics-flink-taskmanager
+#
+# 停止 Flink：
+#   docker-compose -f docker-compose-flink.yml down
+#

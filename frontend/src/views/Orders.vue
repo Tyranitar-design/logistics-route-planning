@@ -44,12 +44,12 @@
         <el-table-column prop="cargo_name" label="货物名称" width="120" />
         <el-table-column label="起点" width="120">
           <template #default="{ row }">
-            {{ row.pickup_node?.name || '-' }}
+            {{ row.pickup_node?.name || row.origin_name || '-' }}
           </template>
         </el-table-column>
         <el-table-column label="终点" width="120">
           <template #default="{ row }">
-            {{ row.delivery_node?.name || '-' }}
+            {{ row.delivery_node?.name || row.destination_name || '-' }}
           </template>
         </el-table-column>
         <el-table-column prop="weight" label="重量(kg)" width="80" />
@@ -391,6 +391,66 @@
         <el-button type="primary" @click="handleAssign">确定</el-button>
       </template>
     </el-dialog>
+    <!-- 订单详情对话框 -->
+    <el-dialog v-model="detailDialogVisible" title="订单详情" width="750px">
+      <template v-if="currentOrder">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="订单号">{{ currentOrder.order_number }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="statusTagType(currentOrder.status)">{{ statusLabel(currentOrder.status) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="货物名称">{{ currentOrder.cargo_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="重量">{{ currentOrder.weight ? currentOrder.weight + ' kg' : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="优先级">
+            <el-tag :type="currentOrder.priority === 'urgent' ? 'danger' : currentOrder.priority === 'high' ? 'warning' : 'info'" size="small">
+              {{ priorityLabel(currentOrder.priority) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="客户姓名">{{ currentOrder.customer_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="客户电话">{{ currentOrder.customer_phone || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider content-position="left">📍 配送信息</el-divider>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="起点">
+            <span v-if="currentOrder.pickup_node?.name">{{ currentOrder.pickup_node.name }}</span>
+            <span v-else>{{ currentOrder.origin_name || '-' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="起点地址">{{ currentOrder.origin_address || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="终点">
+            <span v-if="currentOrder.delivery_node?.name">{{ currentOrder.delivery_node.name }}</span>
+            <span v-else>{{ currentOrder.destination_name || '-' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="终点地址">{{ currentOrder.destination_address || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="寄件人">{{ currentOrder.sender_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="寄件电话">{{ currentOrder.sender_phone || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="收件人">{{ currentOrder.receiver_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="收件电话">{{ currentOrder.receiver_phone || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider content-position="left">🚚 运输信息</el-divider>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="距离">{{ currentOrder.distance ? currentOrder.distance + ' km' : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="预计时长">{{ currentOrder.estimated_duration ? currentOrder.estimated_duration + ' 小时' : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="运费">{{ currentOrder.freight ? '¥' + currentOrder.freight : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="预估成本">{{ currentOrder.estimated_cost ? '¥' + currentOrder.estimated_cost : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentOrder.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="备注">{{ currentOrder.notes || currentOrder.remark || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider content-position="left">🕐 时间线</el-divider>
+        <el-timeline>
+          <el-timeline-item v-if="currentOrder.created_at" timestamp="" type="primary">订单创建 - {{ formatDate(currentOrder.created_at) }}</el-timeline-item>
+          <el-timeline-item v-if="currentOrder.accepted_at" timestamp="" type="primary">已接单 - {{ formatDate(currentOrder.accepted_at) }}</el-timeline-item>
+          <el-timeline-item v-if="currentOrder.started_at" timestamp="" type="warning">开始配送 - {{ formatDate(currentOrder.started_at) }}</el-timeline-item>
+          <el-timeline-item v-if="currentOrder.pickup_at" timestamp="" type="warning">已取件 - {{ formatDate(currentOrder.pickup_at) }}</el-timeline-item>
+          <el-timeline-item v-if="currentOrder.completed_at" timestamp="" type="success">配送完成 - {{ formatDate(currentOrder.completed_at) }}</el-timeline-item>
+        </el-timeline>
+      </template>
+      <template #footer>
+        <el-button @click="detailDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -448,6 +508,7 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新增订单')
 const assignDialogVisible = ref(false)
 const routeDialogVisible = ref(false)
+const detailDialogVisible = ref(false)
 const selectedVehicleId = ref(null)
 const currentOrder = ref(null)
 
@@ -628,8 +689,23 @@ const applyRoute = async (routeData) => {
 
 // 显示详情
 const showDetail = (row) => {
-  ElMessage.info('订单详情功能开发中')
+  currentOrder.value = row
+  detailDialogVisible.value = true
 }
+
+const statusTagType = (status) => {
+  const map = { pending: 'info', accepted: 'warning', in_transit: '', picked_up: 'warning', delivered: '', completed: 'success', cancelled: 'danger' }
+  return map[status] || 'info'
+}
+const statusLabel = (status) => {
+  const map = { pending: '待接单', accepted: '已接单', in_transit: '配送中', picked_up: '已取件', delivered: '已送达', completed: '已完成', cancelled: '已取消', delayed: '延误' }
+  return map[status] || status
+}
+const priorityLabel = (p) => {
+  const map = { urgent: '紧急', high: '高', normal: '普通', low: '低' }
+  return map[p] || p
+}
+
 
 // 显示分配对话框
 const showAssignDialog = (row) => {

@@ -34,9 +34,9 @@ def get_kafka_producer():
                 retries=3,
                 acks='all'
             )
-            print(f"✅ Kafka Producer 连接成功: {KAFKA_BOOTSTRAP_SERVERS}")
+            print(f"[OK] Kafka Producer connected: {KAFKA_BOOTSTRAP_SERVERS}")
         except Exception as e:
-            print(f"⚠️ Kafka Producer 连接失败: {e}")
+            print(f"[WARN] Kafka Producer connection failed: {e}")
             _kafka_producer = None
     return _kafka_producer
 
@@ -69,11 +69,11 @@ def send_to_kafka(topic: str, key: str, value: dict) -> bool:
         future = producer.send(actual_topic, key=key, value=value)
         producer.flush(timeout=5)
         
-        print(f"📤 Kafka 发送成功: topic={actual_topic}, key={key}")
+        print(f"[Kafka] Sent: topic={actual_topic}, key={key}")
         return True
         
     except Exception as e:
-        print(f"❌ Kafka 发送失败: {e}")
+        print(f"[ERROR] Kafka send failed: {e}")
         return False
 
 
@@ -252,7 +252,7 @@ def get_realtime_statistics():
         }
         
     except Exception as e:
-        print(f"❌ 获取统计数据失败: {e}")
+        print(f"[ERROR] Statistics failed: {e}")
         return None
 
 

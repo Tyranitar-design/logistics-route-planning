@@ -46,10 +46,28 @@ export default [
         meta: { title: '深度学习' }
       },
       {
+        path: 'flink',
+        name: 'BigDataFlink',
+        component: () => import('@/views/bigdata/Flink.vue'),
+        meta: { title: 'Flink实时流处理' }
+      },
+      {
         path: 'visual',
         name: 'BigDataVisual',
         component: () => import('@/views/bigdata/Visualization.vue'),
         meta: { title: '数据可视化' }
+      },
+      {
+        path: 'screen',
+        name: 'LogisticsScreen',
+        component: () => import('@/views/bigdata/LogisticsScreen.vue'),
+        meta: { title: '物流大屏', fullscreen: true }
+      },
+      {
+        path: 'classic',
+        name: 'ClassicScreen',
+        component: () => import('@/views/bigdata/ClassicScreen.vue'),
+        meta: { title: '经典大屏', fullscreen: true }
       }
     ]
   }

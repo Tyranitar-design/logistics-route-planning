@@ -7,7 +7,10 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from datetime import datetime
+from pydantic import ValidationError
+
 from app.models import db, User
+from app.schemas import UserLogin, UserCreate, UserResponse
 from app.utils.rate_limiter import rate_limit, RateLimits, get_client_ip
 from app.services.audit_service import audit_service, AuditAction, AuditModule
 
@@ -17,20 +20,23 @@ auth_bp = Blueprint('auth', __name__)
 @auth_bp.route('/login', methods=['POST'])
 @rate_limit(**RateLimits.LOGIN)
 def login():
-    """用户登录"""
+    """用户登录 - 使用 Schema 验证"""
     try:
         data = request.get_json()
-        username = data.get('username')
-        password = data.get('password')
-        ip_address = get_client_ip()
         
-        if not username or not password:
-            return jsonify({'error': '用户名和密码不能为空'}), 400
+        # 使用 Schema 验证
+        try:
+            login_data = UserLogin(**data)
+            username = login_data.username
+            password = login_data.password
+        except ValidationError as e:
+            return jsonify({'error': '参数验证失败', 'details': e.errors()}), 400
+        
+        ip_address = get_client_ip()
         
         user = User.query.filter_by(username=username).first()
         
         if not user or not user.verify_password(password):
-            # 记录登录失败
             audit_service.log_login(user_id=None, username=username, success=False, ip_address=ip_address)
             return jsonify({'error': '用户名或密码错误'}), 401
         
@@ -42,18 +48,19 @@ def login():
         user.last_login = datetime.utcnow()
         db.session.commit()
         
-        # 记录登录成功
         audit_service.log_login(user_id=user.id, username=username, success=True, ip_address=ip_address)
         
-        # 创建token (identity必须是字符串)
+        # 创建token
         access_token = create_access_token(identity=str(user.id))
         refresh_token = create_refresh_token(identity=str(user.id))
         
+        # 使用 Schema 返回响应
         return jsonify({
+            'success': True,
             'message': '登录成功',
             'access_token': access_token,
             'refresh_token': refresh_token,
-            'user': user.to_dict()
+            'user': UserResponse.model_validate(user).model_dump()
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

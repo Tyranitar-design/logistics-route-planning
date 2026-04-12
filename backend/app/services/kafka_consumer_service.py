@@ -43,7 +43,7 @@ def _consume_loop():
             auto_offset_reset='latest'
         )
         
-        print(f"✅ Kafka 消费者已连接，监听主题: {KAFKA_TOPICS}")
+        print(f"[OK] Kafka Consumer connected, topics: {KAFKA_TOPICS}")
         
         for message in consumer:
             try:
@@ -61,10 +61,10 @@ def _consume_loop():
                     _handle_alert_event(data)
                     
             except Exception as e:
-                print(f"❌ 处理消息失败: {e}")
+                print(f"[ERROR] Message handling failed: {e}")
                 
     except Exception as e:
-        print(f"❌ Kafka 消费者连接失败: {e}")
+        print(f"[ERROR] Kafka Consumer connection failed: {e}")
 
 
 def _handle_order_event(data):
@@ -83,7 +83,7 @@ def _handle_order_event(data):
         # 同时推送统计更新
         _push_statistics()
         
-        print(f"📤 推送订单事件: {event_type}")
+        print(f"[WS] Order event pushed: {event_type}")
 
 
 def _handle_vehicle_event(data):
@@ -98,7 +98,7 @@ def _handle_vehicle_event(data):
             'timestamp': datetime.now().isoformat()
         })
         
-        print(f"📤 推送车辆事件: {event_type}")
+        print(f"[WS] Vehicle event pushed: {event_type}")
 
 
 def _handle_tracking_event(data):
@@ -120,7 +120,7 @@ def _handle_alert_event(data):
             'timestamp': datetime.now().isoformat()
         })
         
-        print(f"📤 推送预警事件: {data.get('title', 'unknown')}")
+        print(f"[WS] Alert event pushed: {data.get('title', 'unknown')}")
 
 
 def _push_statistics():
@@ -136,4 +136,4 @@ def _push_statistics():
                 'timestamp': datetime.now().isoformat()
             })
     except Exception as e:
-        print(f"❌ 推送统计失败: {e}")
+        print(f"[ERROR] Statistics push failed: {e}")

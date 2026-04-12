@@ -110,7 +110,7 @@ def mock_search(query, page, size):
     try:
         sql = text("""
             SELECT 
-                o.order_id,
+                o.order_number as order_id,
                 o.customer_name,
                 n1.name as origin_city,
                 n2.name as destination_city,
@@ -119,10 +119,10 @@ def mock_search(query, page, size):
                 o.status,
                 o.created_at
             FROM orders o
-            LEFT JOIN nodes n1 ON o.origin_id = n1.id
-            LEFT JOIN nodes n2 ON o.destination_id = n2.id
+            LEFT JOIN nodes n1 ON o.pickup_node_id = n1.id
+            LEFT JOIN nodes n2 ON o.delivery_node_id = n2.id
             WHERE 
-                o.order_id LIKE :q OR
+                o.order_number LIKE :q OR
                 o.customer_name LIKE :q OR
                 n1.name LIKE :q OR
                 n2.name LIKE :q OR
@@ -133,10 +133,10 @@ def mock_search(query, page, size):
         
         count_sql = text("""
             SELECT COUNT(*) FROM orders o
-            LEFT JOIN nodes n1 ON o.origin_id = n1.id
-            LEFT JOIN nodes n2 ON o.destination_id = n2.id
+            LEFT JOIN nodes n1 ON o.pickup_node_id = n1.id
+            LEFT JOIN nodes n2 ON o.delivery_node_id = n2.id
             WHERE 
-                o.order_id LIKE :q OR
+                o.order_number LIKE :q OR
                 o.customer_name LIKE :q OR
                 n1.name LIKE :q OR
                 n2.name LIKE :q OR

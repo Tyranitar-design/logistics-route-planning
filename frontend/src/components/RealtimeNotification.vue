@@ -117,8 +117,13 @@ const handleVehiclePositions = (positions) => {
 }
 
 onMounted(() => {
-  // 连接 WebSocket
-  wsService.connect()
+  // 检查当前连接状态
+  connected.value = wsService.isConnected()
+  
+  // 如果未连接，则连接 WebSocket
+  if (!connected.value) {
+    wsService.connect()
+  }
   
   // 监听事件
   wsService.on('connected', handleConnected)

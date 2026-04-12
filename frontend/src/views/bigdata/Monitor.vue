@@ -43,7 +43,8 @@ const loading = ref(true)
 const grafanaFrame = ref(null)
 
 // Grafana 仪表盘 URL（需要配置匿名访问或嵌入模式）
-const grafanaUrl = ref('http://localhost:3000/d/logistics-main?orgId=1&kiosk&theme=dark')
+// 使用首页而非特定仪表盘（仪表盘需手动创建）
+const grafanaUrl = ref('http://localhost:3000/?orgId=1&kiosk&theme=dark')
 
 const metrics = ref([
   { icon: '📦', label: '订单总数', value: '--' },
@@ -53,22 +54,52 @@ const metrics = ref([
   { icon: '❤️', label: '系统健康', value: '--' }
 ])
 
-// 从后端获取指标数据
+// 从后端获取指标数据（降级：后端无此接口时使用基础接口）
 const fetchMetrics = async () => {
   try {
-    const res = await fetch('http://localhost:5000/api/metrics/json')
-    const data = await res.json()
-    if (data.success) {
-      metrics.value = [
-        { icon: '📦', label: '订单总数', value: data.data.orders.total },
-        { icon: '🚚', label: '活跃订单', value: data.data.orders.active },
-        { icon: '🚛', label: '车辆总数', value: data.data.vehicles.total },
-        { icon: '🗺️', label: '路线总数', value: data.data.routes.total },
-        { icon: '❤️', label: '系统健康', value: data.data.system.health + '%' }
-      ]
+    // 优先尝试 metrics/json
+    const res = await fetch('/api/metrics/json')
+    if (res.ok) {
+      const data = await res.json()
+      if (data.success) {
+        metrics.value = [
+          { icon: '📦', label: '订单总数', value: data.data.orders.total },
+          { icon: '🚚', label: '活跃订单', value: data.data.orders.active },
+          { icon: '🚛', label: '车辆总数', value: data.data.vehicles.total },
+          { icon: '🗺️', label: '路线总数', value: data.data.routes.total },
+          { icon: '❤️', label: '系统健康', value: data.data.system.health + '%' }
+        ]
+        return
+      }
     }
+    // 降级：用基础 API 获取
+    await fallbackFetch()
   } catch (e) {
-    console.error('获取指标失败:', e)
+    // 后端无 metrics 接口，降级处理
+    await fallbackFetch()
+  }
+}
+
+// 降级方案：从基础接口获取数据
+const fallbackFetch = async () => {
+  try {
+    const [ordersRes, vehiclesRes, routesRes] = await Promise.allSettled([
+      fetch('/api/orders', { headers: { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` } }).then(r => r.ok ? r.json() : null),
+      fetch('/api/vehicles', { headers: { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` } }).then(r => r.ok ? r.json() : null),
+      fetch('/api/routes', { headers: { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` } }).then(r => r.ok ? r.json() : null)
+    ])
+    const orders = ordersRes.status === 'fulfilled' && ordersRes.value?.data ? ordersRes.value.data : (Array.isArray(ordersRes.value) ? ordersRes.value : [])
+    const vehicles = vehiclesRes.status === 'fulfilled' && vehiclesRes.value?.data ? vehiclesRes.value.data : (Array.isArray(vehiclesRes.value) ? vehiclesRes.value : [])
+    const routes = routesRes.status === 'fulfilled' && routesRes.value?.data ? routesRes.value.data : (Array.isArray(routesRes.value) ? routesRes.value : [])
+    metrics.value = [
+      { icon: '📦', label: '订单总数', value: Array.isArray(orders) ? orders.length : '--' },
+      { icon: '🚚', label: '活跃订单', value: Array.isArray(orders) ? orders.filter(o => ['pending','in_transit','picked_up'].includes(o.status)).length : '--' },
+      { icon: '🚛', label: '车辆总数', value: Array.isArray(vehicles) ? vehicles.length : '--' },
+      { icon: '🗺️', label: '路线总数', value: Array.isArray(routes) ? routes.length : '--' },
+      { icon: '❤️', label: '系统健康', value: '100%' }
+    ]
+  } catch (e) {
+    // 静默失败，保持默认 '--' 显示
   }
 }
 

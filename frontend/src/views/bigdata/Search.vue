@@ -167,7 +167,7 @@ const handleInput = () => {
 
 const fetchSuggestions = async () => {
   try {
-    const res = await fetch(`http://localhost:5000/api/es/suggestions?q=${encodeURIComponent(searchQuery.value)}`)
+    const res = await fetch(`/api/es/suggestions?q=${encodeURIComponent(searchQuery.value)}`)
     const data = await res.json()
     if (data.success) {
       suggestions.value = data.suggestions
@@ -193,7 +193,7 @@ const handleSearch = async () => {
   
   try {
     const res = await fetch(
-      `http://localhost:5000/api/es/search?q=${encodeURIComponent(searchQuery.value)}&page=${currentPage.value}&size=${pageSize.value}`
+      `/api/es/search?q=${encodeURIComponent(searchQuery.value)}&page=${currentPage.value}&size=${pageSize.value}`
     )
     const data = await res.json()
     

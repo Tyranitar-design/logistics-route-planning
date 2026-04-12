@@ -352,7 +352,7 @@ function renderMap() {
   if (!mapRef.value || !echarts) { ElMessage.warning('ECharts未加载'); return }
 
   // 动态加载中国地图
-  fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json')
+  fetch('/china.json')
     .then(r => r.json())
     .then(china => {
       echarts.registerMap('china', china)

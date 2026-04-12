@@ -68,36 +68,58 @@ class OrderRouteService:
                 return OrderRouteRecommendation(success=False, error='订单不存在')
             origin_id = order.pickup_node_id
             destination_id = order.delivery_node_id
-        
-        origin = Node.query.get(origin_id)
-        destination = Node.query.get(destination_id)
-        
-        if not origin or not destination:
-            return OrderRouteRecommendation(success=False, error='起点或终点不存在')
-        
+            # 回退：如果没有节点 ID，用名称构建
+            origin_name = order.origin_name
+            destination_name = order.destination_name
+            origin_lng = order.origin_lng
+            origin_lat = order.origin_lat
+            dest_lng = order.destination_lng
+            dest_lat = order.destination_lat
+
+        origin = Node.query.get(origin_id) if origin_id else None
+        destination = Node.query.get(destination_id) if destination_id else None
+
+        # 构建起点终点信息
+        if origin:
+            result_origin = origin.to_dict()
+        elif origin_name:
+            result_origin = {'name': origin_name, 'longitude': origin_lng, 'latitude': origin_lat}
+        else:
+            return OrderRouteRecommendation(success=False, error='订单没有设置起点')
+
+        if destination:
+            result_dest = destination.to_dict()
+        elif destination_name:
+            result_dest = {'name': destination_name, 'longitude': dest_lng, 'latitude': dest_lat}
+        else:
+            return OrderRouteRecommendation(success=False, error='订单没有设置终点')
+
         result = OrderRouteRecommendation(
             success=True,
             order_id=order_id,
-            origin=origin.to_dict(),
-            destination=destination.to_dict()
+            origin=result_origin,
+            destination=result_dest
         )
-        
-        # 1. 本地算法路线推荐
-        try:
-            local_result = self._get_local_route(origin_id, destination_id)
-            if local_result['success']:
-                result.local_route = local_result
-        except Exception as e:
-            logger.warning(f"本地算法推荐失败: {e}")
-        
-        # 2. 高德地图路线推荐
-        if origin.longitude and origin.latitude and destination.longitude and destination.latitude:
+
+        # 1. 本地算法路线推荐（仅在有节点 ID 时）
+        if origin_id and destination_id:
             try:
-                amap_result = self._get_amap_route(origin, destination)
+                local_result = self._get_local_route(origin_id, destination_id)
+                if local_result['success']:
+                    result.local_route = local_result
+            except Exception as e:
+                logger.warning(f"本地算法推荐失败: {e}")
+
+        # 2. 高德地图路线推荐（需要有经纬度）
+        if result_origin.get('longitude') and result_origin.get('latitude') and result_dest.get('longitude') and result_dest.get('latitude'):
+            try:
+                amap_result = self._get_amap_route(result_origin, result_dest)
                 if amap_result['success']:
                     result.amap_route = amap_result
             except Exception as e:
                 logger.warning(f"高德地图推荐失败: {e}")
+        else:
+            logger.info("起点或终点缺少经纬度，跳过高德地图推荐")
         
         # 3. 综合推荐
         result.recommended_route, result.recommendation_reason = self._select_best_route(
@@ -176,30 +198,39 @@ class OrderRouteService:
         
         return result
     
-    def _get_amap_route(self, origin: Node, destination: Node) -> Dict:
-        """获取高德地图路线"""
+    def _get_amap_route(self, origin, destination) -> Dict:
+        """获取高德地图路线（支持 Node 对象或 dict）"""
+        # 兼容 Node 对象和 dict
+        o_lng = getattr(origin, 'longitude', None) or origin.get('longitude')
+        o_lat = getattr(origin, 'latitude', None) or origin.get('latitude')
+        d_lng = getattr(destination, 'longitude', None) or destination.get('longitude')
+        d_lat = getattr(destination, 'latitude', None) or destination.get('latitude')
+        o_name = getattr(origin, 'name', None) or origin.get('name', '未知')
+        d_name = getattr(destination, 'name', None) or destination.get('name', '未知')
+
+        if not all([o_lng, o_lat, d_lng, d_lat]):
+            return {'success': False, 'error': '起点或终点缺少经纬度'}
+
         service = get_amap_service()
-        
-        # 多路线规划
+
         result = service.multi_route(
-            (origin.longitude, origin.latitude),
-            (destination.longitude, destination.latitude)
+            (o_lng, o_lat),
+            (d_lng, d_lat)
         )
-        
+
         if not result.get('success'):
             return {'success': False, 'error': result.get('error', '高德地图路线规划失败')}
-        
+
         routes = result.get('routes', [])
         if not routes:
             return {'success': False, 'error': '未找到可用路线'}
-        
-        # 整合结果
+
         amap_result = {
             'success': True,
             'source': 'amap',
             'routes': [],
-            'origin_name': origin.name,
-            'destination_name': destination.name
+            'origin_name': o_name,
+            'destination_name': d_name
         }
         
         for i, route in enumerate(routes):

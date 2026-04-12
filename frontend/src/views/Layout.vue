@@ -89,6 +89,11 @@
           <span>敏捷优化</span>
         </el-menu-item>
         
+        <el-menu-item index="/network-design">
+          <el-icon><Share /></el-icon>
+          <span>网络设计</span>
+        </el-menu-item>
+        
         <el-menu-item index="/risk">
           <el-icon><Warning /></el-icon>
           <span>风险管理</span>
@@ -157,6 +162,11 @@
         <el-menu-item index="/data-collection">
           <el-icon><Download /></el-icon>
           <span>📊 数据采集</span>
+        </el-menu-item>
+        
+        <el-menu-item index="/redis-monitor">
+          <el-icon><Coin /></el-icon>
+          <span>⚡ Redis 监控</span>
         </el-menu-item>
         
         <el-menu-item index="/bigdata/monitor">
@@ -231,7 +241,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { VideoPlay, TrendCharts, Grid, Promotion, DataLine, Cpu, Lightning, Warning, Bell, MagicStick, Expand, Fold, Shop, Van, User, Document, SetUp, DataBoard, Monitor, Download } from '@element-plus/icons-vue'
+import { VideoPlay, TrendCharts, Grid, Promotion, DataLine, Cpu, Lightning, Warning, Bell, MagicStick, Expand, Fold, Shop, Van, User, Document, SetUp, DataBoard, Monitor, Download, Coin, Share, Platform } from '@element-plus/icons-vue'
 import RealtimeNotification from '@/components/RealtimeNotification.vue'
 import AiChat from '@/components/AiChat.vue'
 import LangSwitch from '@/components/LangSwitch.vue'
@@ -287,7 +297,9 @@ const pageTitle = computed(() => {
     '/audit-log': '审计日志',
     '/test-data': '测试数据生成',
     '/data-collection': '数据采集中心',
-    '/big-data': '大数据大屏'
+    '/redis-monitor': 'Redis 实时监控',
+    '/big-data': '大数据大屏',
+    '/network-design': '物流网络设计'
   }
   return titles[route.path] || '物流路径规划系统'
 })

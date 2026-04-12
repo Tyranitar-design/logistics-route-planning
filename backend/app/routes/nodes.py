@@ -6,7 +6,10 @@
 
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
+from pydantic import ValidationError
+
 from app.models import db, Node
+from app.schemas import NodeCreate, NodeUpdate, NodeResponse
 
 nodes_bp = Blueprint('nodes', __name__)
 
@@ -61,28 +64,39 @@ def get_node(node_id):
 @nodes_bp.route('', methods=['POST'])
 @jwt_required()
 def create_node():
-    """创建节点"""
+    """创建节点 - 使用 Schema 验证"""
     try:
         data = request.get_json()
         
+        # 使用 Schema 验证
+        try:
+            node_data = NodeCreate(**data)
+        except ValidationError as e:
+            return jsonify({'error': '参数验证失败', 'details': e.errors()}), 400
+        
         node = Node(
-            name=data.get('name'),
-            type=data.get('type', 'customer'),
-            address=data.get('address'),
-            longitude=data.get('longitude'),
-            latitude=data.get('latitude'),
-            contact_name=data.get('contact_name'),
-            contact_phone=data.get('contact_phone'),
-            capacity=data.get('capacity'),
-            notes=data.get('notes')
+            name=node_data.name,
+            code=node_data.code,
+            type=node_data.type,
+            province=node_data.province,
+            city=node_data.city,
+            district=node_data.district,
+            address=node_data.address,
+            longitude=node_data.longitude,
+            latitude=node_data.latitude,
+            contact_name=node_data.contact_name,
+            contact_phone=node_data.contact_phone,
+            capacity=node_data.capacity,
+            notes=node_data.notes
         )
         
         db.session.add(node)
         db.session.commit()
         
         return jsonify({
+            'success': True,
             'message': '节点创建成功',
-            'node': node.to_dict()
+            'node': NodeResponse.model_validate(node).model_dump()
         }), 201
     except Exception as e:
         db.session.rollback()

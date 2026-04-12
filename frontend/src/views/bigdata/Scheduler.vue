@@ -91,7 +91,7 @@ const sampleTasks = ref([
 ])
 
 const openAirflow = () => {
-  window.open('http://localhost:8085', '_blank')
+  window.open('http://localhost:8082', '_blank')
 }
 
 const refreshTasks = () => {

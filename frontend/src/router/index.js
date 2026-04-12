@@ -138,6 +138,11 @@ const routes = [
         component: () => import('@/views/DataCollectionView.vue')
       },
       {
+        path: 'redis-monitor',
+        name: 'RedisMonitor',
+        component: () => import('@/views/RedisMonitorView.vue')
+      },
+      {
         path: 'data-screen',
         name: 'DataScreen',
         component: () => import('@/views/DataScreen.vue'),
@@ -148,6 +153,16 @@ const routes = [
         name: 'BigData',
         component: () => import('@/views/BigDataScreen.vue'),
         meta: { fullscreen: true }
+      },
+      {
+        path: 'network-design',
+        name: 'NetworkDesign',
+        component: () => import('@/views/NetworkDesignView.vue')
+      },
+      {
+        path: 'scenario-compare',
+        name: 'ScenarioCompare',
+        component: () => import('@/views/ScenarioCompareView.vue')
       }
     ]
   }

@@ -6,7 +6,9 @@ Flask应用初始化 - 敏捷路径优化版本
 
 from flask import Flask, jsonify
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, jwt_required
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sys
 import os
 
@@ -19,34 +21,37 @@ from app.models import db
 
 # 初始化 JWT
 jwt = JWTManager()
+# 初始化限流器
+limiter = Limiter(key_func=get_remote_address, default_limits=['200 per day', '50 per hour'])
 
 
 def create_app(config_name='default'):
     """应用工厂函数"""
     app = Flask(__name__)
-    
+
     # 加载配置
     app.config.from_object(config[config_name])
-    
+
     # 初始化扩展
     db.init_app(app)
     CORS(app, origins=app.config['CORS_ORIGINS'], supports_credentials=True)
     jwt.init_app(app)
-    
+    limiter.init_app(app)
+
     # JWT错误处理
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):
         return jsonify({'error': 'Token已过期', 'message': '请重新登录'}), 401
-    
+
     @jwt.invalid_token_loader
     def invalid_token_callback(error):
         print(f"[JWT错误] 无效Token: {error}")
         return jsonify({'error': '无效的Token', 'message': '请重新登录', 'detail': str(error)}), 401
-    
+
     @jwt.unauthorized_loader
     def missing_token_callback(error):
         return jsonify({'error': '缺少Token', 'message': '请先登录'}), 401
-    
+
     # 注册蓝图
     from app.routes.auth import auth_bp
     from app.routes.nodes import nodes_bp
@@ -83,8 +88,24 @@ def create_app(config_name='default'):
     from app.routes.audit import audit_bp
     from app.routes.test_data import test_data_bp
     from app.routes.speech import speech_bp
+    from app.routes.redis import redis_bp
+    from app.routes.spark import spark_bp
+    from app.routes.clickhouse import ch_bp
+    from app.routes.es_search import es_bp
+    from app.routes.data_collection import data_collection_bp
     from app.routes.bigdata import bigdata_bp
-    
+    from app.routes.flink import flink_bp
+    from app.routes.network import network_bp
+
+    # 注册限流错误处理器
+    @app.errorhandler(429)
+    def ratelimit_handler(e):
+        return jsonify({
+            'error': '请求过于频繁',
+            'message': '请稍后再试',
+            'retry_after': e.description
+        }), 429
+
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(nodes_bp, url_prefix='/api/nodes')
     app.register_blueprint(routes_bp, url_prefix='/api/routes')
@@ -108,53 +129,70 @@ def create_app(config_name='default'):
     app.register_blueprint(risk_bp, url_prefix='/api/risk')
     app.register_blueprint(alert_bp, url_prefix='/api/alert')
     app.register_blueprint(advanced_route_bp, url_prefix='/api/advanced-route')
-    
+
     # 司机端 API
     app.register_blueprint(driver_bp, url_prefix='/api/driver')
-    
+
     # 供应商管理 API
     app.register_blueprint(supplier_bp)
-    
+
     # 审计日志 API
     app.register_blueprint(audit_bp, url_prefix='/api/audit')
-    
+
     # 测试数据 API
     app.register_blueprint(test_data_bp, url_prefix='/api/test-data')
-    
+
     # 语音识别 API
     app.register_blueprint(speech_bp, url_prefix='/api/speech')
-    
-    # 大数据分析 API
+
+    # Redis 缓存 API
+    app.register_blueprint(redis_bp, url_prefix='/api/redis')
+
+    # 大数据 API
+    app.register_blueprint(spark_bp, url_prefix='/api/spark')
+    app.register_blueprint(ch_bp, url_prefix='/api/ch')
+    app.register_blueprint(es_bp, url_prefix='/api/es')
+    app.register_blueprint(data_collection_bp, url_prefix='/api/data-collection')
     app.register_blueprint(bigdata_bp, url_prefix='/api/bigdata')
-    
+    app.register_blueprint(flink_bp, url_prefix='/api/flink')
+    app.register_blueprint(network_bp, url_prefix='/api/network')
+
+    # 添加 /api/crawler 别名路由（前端兼容）
+    from flask import redirect, request
+    @app.route('/api/crawler/status', methods=['GET'])
+    def crawler_status():
+        from app.routes.data_collection import get_collection_status
+        return get_collection_status()
+    @app.route('/api/crawler/oil', methods=['GET'])
+    @jwt_required()
+    def crawler_oil():
+        from app.routes.data_collection import get_oil_prices
+        return get_oil_prices()
+    @app.route('/api/crawler/weather/<city>', methods=['GET'])
+    @jwt_required()
+    def crawler_weather(city):
+        from app.routes.data_collection import get_weather_data
+        return get_weather_data(city)
+    @app.route('/api/crawler/traffic/<city>', methods=['GET'])
+    @jwt_required()
+    def crawler_traffic(city):
+        from app.routes.data_collection import get_traffic_data
+        return get_traffic_data(city)
+    @app.route('/api/crawler/express/compare', methods=['POST'])
+    @jwt_required()
+    def crawler_express_compare():
+        from app.routes.data_collection import compare_express
+        return compare_express()
+    @app.route('/api/crawler/all', methods=['GET'])
+    @jwt_required()
+    def crawler_all():
+        from app.routes.data_collection import collect_all_data
+        return collect_all_data()
+
     # Prometheus 监控指标 API
     from app.routes.metrics import metrics_bp
     app.register_blueprint(metrics_bp, url_prefix='/api')
-    
-    # Elasticsearch 搜索 API
-    from app.routes.es_search import es_bp
-    app.register_blueprint(es_bp, url_prefix='/api/es')
-    
-    # ClickHouse 大数据分析 API
-    from app.routes.clickhouse import ch_bp
-    app.register_blueprint(ch_bp, url_prefix='/api/ch')
-    
-    # Spark Streaming API
-    from app.routes.spark_api import spark_bp
-    app.register_blueprint(spark_bp, url_prefix='/api/spark')
-    
-    # Spark 分析 API
-    from app.routes.spark import spark_bp
-    app.register_blueprint(spark_bp, url_prefix='/api/spark')
-    
-    # Redis 缓存 API
-    from app.routes.redis import redis_bp
-    app.register_blueprint(redis_bp, url_prefix='/api/redis')
-    
-    # 数据采集 API
-    from app.routes.data_collection import data_collection_bp
-    app.register_blueprint(data_collection_bp, url_prefix='/api/crawler')
-    
+
     # 注册新功能路由
     register_advanced_ml_routes(app)
     register_pricing_routes(app)
@@ -162,14 +200,14 @@ def create_app(config_name='default'):
     register_multimodal_routes(app)
     register_anomaly_routes(app)
     register_data_analytics_routes(app)
-    
+
     # 注册 ML 预测路由
     register_ml_routes(app)
-    
+
     # 注册健康检查蓝图
     from app.routes.health import health_bp
     app.register_blueprint(health_bp, url_prefix='/api')
-    
+
     # 根路径
     @app.route('/')
     def index():
@@ -179,7 +217,7 @@ def create_app(config_name='default'):
             'features': 43,
             'documentation': '/api/docs'
         })
-    
+
     # API 文档入口
     @app.route('/api/docs')
     def api_docs():
@@ -207,5 +245,5 @@ def create_app(config_name='default'):
                 'dashboard': '/api/analytics/dashboard'
             }
         })
-    
+
     return app

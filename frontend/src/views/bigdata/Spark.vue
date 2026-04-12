@@ -71,7 +71,7 @@ const metrics = ref([
 
 const fetchData = async () => {
   try {
-    const res = await fetch('http://localhost:5000/api/spark/metrics')
+    const res = await fetch('/api/spark/metrics')
     const data = await res.json()
     if (data.success) {
       const d = data.data
@@ -91,7 +91,7 @@ const initChart = async () => {
   if (!chart.value) return
   
   try {
-    const res = await fetch('http://localhost:5000/api/spark/analysis/realtime')
+    const res = await fetch('/api/spark/analysis/realtime')
     const data = await res.json()
     
     if (data.success) {
@@ -129,7 +129,7 @@ const initChart = async () => {
 const startStreaming = async () => {
   loading.value = true
   try {
-    await fetch('http://localhost:5000/api/spark/streaming/start', { method: 'POST' })
+    await fetch('/api/spark/streaming/start', { method: 'POST' })
     status.value = 'running'
   } finally {
     loading.value = false
@@ -137,7 +137,7 @@ const startStreaming = async () => {
 }
 
 const stopStreaming = async () => {
-  await fetch('http://localhost:5000/api/spark/streaming/stop', { method: 'POST' })
+  await fetch('/api/spark/streaming/stop', { method: 'POST' })
   status.value = 'ready'
 }
 
@@ -147,7 +147,7 @@ const refreshData = () => {
 }
 
 const openSparkUI = () => {
-  window.open('http://localhost:8082', '_blank')
+  window.open('http://localhost:8080', '_blank')
 }
 
 onMounted(() => {

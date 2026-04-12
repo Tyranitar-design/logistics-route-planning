@@ -7,6 +7,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
 from app.models import db, Vehicle
+from app.services.kafka_service import send_vehicle_event
 
 vehicles_bp = Blueprint('vehicles', __name__)
 
@@ -87,6 +88,12 @@ def create_vehicle():
         db.session.add(vehicle)
         db.session.commit()
         
+        # 发送到 Kafka
+        try:
+            send_vehicle_event(vehicle.to_dict(), 'created')
+        except Exception as e:
+            print(f'Kafka send failed: {e}')
+        
         return jsonify({
             'message': '车辆创建成功',
             'vehicle': vehicle.to_dict()
@@ -129,6 +136,12 @@ def update_vehicle(vehicle_id):
             vehicle.status = data['status']
         
         db.session.commit()
+        
+        # 发送到 Kafka
+        try:
+            send_vehicle_event(vehicle.to_dict(), 'updated')
+        except Exception as e:
+            print(f'Kafka send failed: {e}')
         
         return jsonify({
             'message': '车辆更新成功',

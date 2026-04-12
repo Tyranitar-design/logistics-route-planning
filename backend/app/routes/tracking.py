@@ -7,6 +7,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.tracking_service import get_tracking_service
+from app.services.kafka_service import send_tracking_event
 import logging
 
 logger = logging.getLogger(__name__)

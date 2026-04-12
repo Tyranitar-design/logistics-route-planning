@@ -40,6 +40,10 @@ logs/
 .coverage
 htmlcov/
 
+# 上传文件
+app/uploads/
+uploads/
+
 # 其他
 .DS_Store
 Thumbs.db

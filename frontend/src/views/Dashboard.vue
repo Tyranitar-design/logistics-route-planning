@@ -520,7 +520,7 @@ const initChinaMap = async () => {
   
   // 加载中国地图数据
   try {
-    const chinaMapUrl = 'https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json'
+    const chinaMapUrl = '/china.json'
     const response = await fetch(chinaMapUrl)
     const chinaJson = await response.json()
     echarts.registerMap('china', chinaJson)

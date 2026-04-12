@@ -1,0 +1,107 @@
+# 🌬️ Airflow 任务调度中心
+# 物流路径规划系统 - 工作流调度
+
+services:
+  # ==================== Airflow ====================
+  
+  # Airflow Web Server
+  airflow-webserver:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: logistics-airflow-webserver
+    ports:
+      - "8082:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__FERNET_KEY=YourFernetKeyHereReplaceWithRealKey12345=
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow123@airflow-postgres:5432/airflow
+      - AIRFLOW__WEBSERVER__SECRET_KEY=airflow_secret_key_2024
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=true
+      - _AIRFLOW_DB_MIGRATE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin123
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+    depends_on:
+      - airflow-postgres
+    networks:
+      - bigdata-network
+    command: webserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: logistics-airflow-scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__FERNET_KEY=YourFernetKeyHereReplaceWithRealKey12345=
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow123@airflow-postgres:5432/airflow
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+    depends_on:
+      - airflow-postgres
+    command: scheduler
+    networks:
+      - bigdata-network
+    restart: unless-stopped
+
+  # PostgreSQL for Airflow
+  airflow-postgres:
+    image: postgres:15-alpine
+    container_name: logistics-airflow-postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow123
+      - POSTGRES_DB=airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  airflow-postgres-data:
+    driver: local
+
+networks:
+  bigdata-network:
+    external: true
+    name: logistics-bigdata-network
+
+# ==================== 使用说明 ====================
+#
+# 启动 Airflow：
+#   docker-compose -f docker-compose-airflow.yml up -d
+#
+# 访问地址：
+#   Airflow Web UI: http://localhost:8082
+#   用户名: admin
+#   密码: admin123
+#
+# DAG 文件位置：
+#   ./dags/ - 放置 DAG 定义文件
+#   ./logs/ - 日志目录
+#   ./plugins/ - 插件目录
+#   ./scripts/ - 脚本目录

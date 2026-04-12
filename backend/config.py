@@ -7,6 +7,10 @@ Flask配置文件
 import os
 from datetime import timedelta
 
+# 加载 .env 文件
+from dotenv import load_dotenv
+load_dotenv()
+
 
 class Config:
     """基础配置"""

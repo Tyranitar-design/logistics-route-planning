@@ -8,12 +8,14 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models import db, Route, Node
 from app.services.path_algorithm import get_path_service
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 routes_bp = Blueprint('routes', __name__)
 
 
 @routes_bp.route('', methods=['GET'])
 @jwt_required()
+@rate_limit(**RateLimits.API)
 def get_routes():
     """获取路线列表"""
     try:
@@ -51,6 +53,7 @@ def get_route(route_id):
 
 @routes_bp.route('', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=20, window_seconds=60, key_func=lambda: f"create_route:{get_jwt_identity()}")
 def create_route():
     """创建路线"""
     try:
@@ -83,6 +86,7 @@ def create_route():
 
 @routes_bp.route('/<int:route_id>', methods=['PUT'])
 @jwt_required()
+@rate_limit(max_requests=20, window_seconds=60, key_func=lambda: f"update_route:{get_jwt_identity()}")
 def update_route(route_id):
     """更新路线"""
     try:
@@ -123,6 +127,7 @@ def update_route(route_id):
 
 @routes_bp.route('/<int:route_id>', methods=['DELETE'])
 @jwt_required()
+@rate_limit(max_requests=10, window_seconds=60, key_func=lambda: f"delete_route:{get_jwt_identity()}")
 def delete_route(route_id):
     """删除路线"""
     try:
@@ -139,6 +144,7 @@ def delete_route(route_id):
 
 @routes_bp.route('/recommend', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=30, window_seconds=60, key_func=lambda: f"recommend_route:{get_jwt_identity()}")
 def recommend_route():
     """路径规划推荐 - 使用高级算法（Dijkstra/A*）"""
     try:

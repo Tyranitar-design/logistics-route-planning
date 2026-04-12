@@ -14,6 +14,7 @@ import tempfile
 from app.models import db, Node, Order, Route, Vehicle
 from app.services.export_service import ExportService
 from app.services.import_service import ImportService
+from app.utils.rate_limiter import rate_limit, RateLimits
 
 data_bp = Blueprint('data', __name__)
 
@@ -22,6 +23,7 @@ data_bp = Blueprint('data', __name__)
 
 @data_bp.route('/import/nodes', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=10, window_seconds=60, key_func=lambda: f"import_nodes:{get_jwt_identity()}")
 def import_nodes():
     """导入节点数据"""
     try:
@@ -47,6 +49,7 @@ def import_nodes():
 
 @data_bp.route('/import/orders', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=10, window_seconds=60, key_func=lambda: f"import_orders:{get_jwt_identity()}")
 def import_orders():
     """导入订单数据"""
     try:
@@ -72,6 +75,7 @@ def import_orders():
 
 @data_bp.route('/import/routes', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=10, window_seconds=60, key_func=lambda: f"import_routes:{get_jwt_identity()}")
 def import_routes():
     """导入路线数据"""
     try:
@@ -99,6 +103,7 @@ def import_routes():
 
 @data_bp.route('/export', methods=['GET'])
 @jwt_required()
+@rate_limit(max_requests=5, window_seconds=60, key_func=lambda: f"export:{get_jwt_identity()}")
 def export_data():
     """导出数据"""
     try:
