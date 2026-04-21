@@ -332,3 +332,193 @@ def get_algorithms():
             'satisfaction': '满意度优化权重（0-1）'
         }
     })
+
+
+@dispatch_bp.route('/optimize-v2', methods=['POST'])
+@jwt_required()
+def optimize_dispatch_v2():
+    """
+    使用优化引擎进行调度（V2）
+    
+    Body:
+        order_ids: 订单ID列表
+        vehicle_ids: 车辆ID列表
+        solver: 求解器类型
+        multi_objective: 是否多目标优化
+        time_limit: 时间限制
+    """
+    from app.models import Order, Vehicle, Node
+    from app.services.smart_dispatch_service_v2 import smart_dispatch_v2
+    
+    try:
+        data = request.get_json() or {}
+        
+        order_ids = data.get('order_ids', [])
+        vehicle_ids = data.get('vehicle_ids', [])
+        solver = data.get('solver', 'genetic')
+        multi_objective = data.get('multi_objective', False)
+        time_limit = data.get('time_limit', 60)
+        
+        # 获取数据
+        orders = Order.query.filter(Order.id.in_(order_ids)).all() if order_ids else Order.query.filter(Order.status == 'pending').all()
+        vehicles = Vehicle.query.filter(Vehicle.id.in_(vehicle_ids)).all() if vehicle_ids else Vehicle.query.filter(Vehicle.status == 'available').all()
+        nodes = Node.query.all()
+        
+        # 找仓库
+        depot = Node.query.filter(Node.type == 'depot').first()
+        if not depot:
+            depot = nodes[0] if nodes else None
+        
+        if not depot:
+            return jsonify({'success': False, 'error': '找不到仓库节点'}), 400
+        
+        # 调用优化引擎
+        result = smart_dispatch_v2.optimize_dispatch(
+            orders=orders,
+            vehicles=vehicles,
+            nodes=nodes,
+            depot_node=depot,
+            solver_type=solver,
+            multi_objective=multi_objective,
+            time_limit=time_limit
+        )
+        
+        if result.success:
+            return jsonify({
+                'success': True,
+                'plans': [
+                    {
+                        'vehicle_id': p.vehicle_id,
+                        'vehicle_info': p.vehicle_info,
+                        'orders': p.orders,
+                        'route_sequence': p.route_sequence,
+                        'total_distance': p.total_distance,
+                        'total_duration': p.total_duration,
+                        'total_cost': p.total_cost,
+                        'score': p.score,
+                        'load_utilization': p.load_utilization
+                    }
+                    for p in result.plans
+                ],
+                'unassigned_orders': result.unassigned_orders,
+                'summary': result.summary,
+                'solver': result.solver,
+                'solve_time': result.solve_time,
+                'objectives': result.objectives
+            })
+        else:
+            return jsonify({'success': False, 'error': result.error}), 400
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/multi-objective-v2', methods=['POST'])
+@jwt_required()
+def multi_objective_optimize_v2():
+    """
+    多目标优化（V2）
+    
+    返回 Pareto 前沿上的最优解
+    """
+    from app.models import Order, Vehicle, Node
+    from app.services.smart_dispatch_service_v2 import smart_dispatch_v2
+    
+    try:
+        data = request.get_json() or {}
+        
+        order_ids = data.get('order_ids', [])
+        vehicle_ids = data.get('vehicle_ids', [])
+        solver = data.get('solver', 'pymoo_nsga2')
+        n_gen = data.get('n_gen', 100)
+        
+        # 获取数据
+        orders = Order.query.filter(Order.id.in_(order_ids)).all() if order_ids else Order.query.filter(Order.status == 'pending').all()
+        vehicles = Vehicle.query.filter(Vehicle.id.in_(vehicle_ids)).all() if vehicle_ids else Vehicle.query.filter(Vehicle.status == 'available').all()
+        nodes = Node.query.all()
+        
+        depot = Node.query.filter(Node.type == 'depot').first()
+        if not depot:
+            depot = nodes[0] if nodes else None
+        
+        if not depot:
+            return jsonify({'success': False, 'error': '找不到仓库节点'}), 400
+        
+        # 调用多目标优化
+        result = smart_dispatch_v2.multi_objective_optimize(
+            orders=orders,
+            vehicles=vehicles,
+            nodes=nodes,
+            depot_node=depot,
+            solver_type=solver,
+            n_gen=n_gen
+        )
+        
+        if result.success:
+            return jsonify({
+                'success': True,
+                'plans': [
+                    {
+                        'vehicle_id': p.vehicle_id,
+                        'vehicle_info': p.vehicle_info,
+                        'orders': p.orders,
+                        'route_sequence': p.route_sequence,
+                        'total_distance': p.total_distance,
+                        'load_utilization': p.load_utilization
+                    }
+                    for p in result.plans
+                ],
+                'summary': result.summary,
+                'solver': result.solver,
+                'solve_time': result.solve_time,
+                'objectives': result.objectives,
+                'pareto_front_size': result.summary.get('pareto_size', 1)
+            })
+        else:
+            return jsonify({'success': False, 'error': result.error}), 400
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/compare-solvers', methods=['POST'])
+@jwt_required()
+def compare_solvers():
+    """
+    对比多个求解器
+    """
+    from app.models import Order, Vehicle, Node
+    from app.services.smart_dispatch_service_v2 import smart_dispatch_v2
+    
+    try:
+        data = request.get_json() or {}
+        
+        order_ids = data.get('order_ids', [])
+        vehicle_ids = data.get('vehicle_ids', [])
+        solvers = data.get('solvers', ['genetic', 'ortools'])
+        time_limit = data.get('time_limit', 30)
+        
+        orders = Order.query.filter(Order.id.in_(order_ids)).all() if order_ids else Order.query.filter(Order.status == 'pending').limit(10).all()
+        vehicles = Vehicle.query.filter(Vehicle.id.in_(vehicle_ids)).all() if vehicle_ids else Vehicle.query.filter(Vehicle.status == 'available').limit(5).all()
+        nodes = Node.query.all()
+        
+        depot = Node.query.filter(Node.type == 'depot').first()
+        if not depot:
+            depot = nodes[0] if nodes else None
+        
+        if not depot:
+            return jsonify({'success': False, 'error': '找不到仓库节点'}), 400
+        
+        result = smart_dispatch_v2.compare_solvers(
+            orders=orders,
+            vehicles=vehicles,
+            nodes=nodes,
+            depot_node=depot,
+            solver_types=solvers,
+            time_limit=time_limit
+        )
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

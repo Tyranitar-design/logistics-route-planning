@@ -163,6 +163,16 @@ const routes = [
         path: 'scenario-compare',
         name: 'ScenarioCompare',
         component: () => import('@/views/ScenarioCompareView.vue')
+      },
+      {
+        path: 'optimization-engine',
+        name: 'OptimizationEngine',
+        component: () => import('@/views/OptimizationEngine.vue')
+      },
+      {
+        path: 'pareto-front',
+        name: 'ParetoFront',
+        component: () => import('@/views/ParetoFrontPage.vue')
       }
     ]
   }

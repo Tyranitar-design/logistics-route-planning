@@ -94,6 +94,16 @@
           <span>网络设计</span>
         </el-menu-item>
         
+        <el-menu-item index="/optimization-engine">
+          <el-icon><TrendCharts /></el-icon>
+          <span>优化引擎</span>
+        </el-menu-item>
+        
+        <el-menu-item index="/pareto-front">
+          <el-icon><Aim /></el-icon>
+          <span>Pareto前沿</span>
+        </el-menu-item>
+        
         <el-menu-item index="/risk">
           <el-icon><Warning /></el-icon>
           <span>风险管理</span>
@@ -291,6 +301,10 @@ const pageTitle = computed(() => {
     '/advanced-features': t('menu.advanced', '高级功能中心'),
     '/anomaly-detection': t('menu.anomaly', '实时异常检测中心'),
     '/data-analytics': t('menu.dataAnalytics', '数据分析中心'),
+    '/network-design': '网络设计',
+    '/optimization-engine': '优化引擎',
+    '/pareto-front': 'Pareto前沿',
+    '/scenario-compare': '场景对比',
     '/suppliers': t('menu.supplier'),
     '/vehicles': '车辆管理',
     '/users': '用户管理',

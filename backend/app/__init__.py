@@ -96,6 +96,8 @@ def create_app(config_name='default'):
     from app.routes.bigdata import bigdata_bp
     from app.routes.flink import flink_bp
     from app.routes.network import network_bp
+    from app.routes.tianditu_route import tianditu_bp
+    from app.routes.optimization import optimization_bp
 
     # 注册限流错误处理器
     @app.errorhandler(429)
@@ -156,6 +158,7 @@ def create_app(config_name='default'):
     app.register_blueprint(bigdata_bp, url_prefix='/api/bigdata')
     app.register_blueprint(flink_bp, url_prefix='/api/flink')
     app.register_blueprint(network_bp, url_prefix='/api/network')
+    app.register_blueprint(tianditu_bp, url_prefix='/api/tianditu')
 
     # 添加 /api/crawler 别名路由（前端兼容）
     from flask import redirect, request
@@ -200,6 +203,9 @@ def create_app(config_name='default'):
     register_multimodal_routes(app)
     register_anomaly_routes(app)
     register_data_analytics_routes(app)
+    
+    # 注册优化引擎路由
+    app.register_blueprint(optimization_bp, url_prefix='/api/optimization')
 
     # 注册 ML 预测路由
     register_ml_routes(app)
