@@ -268,6 +268,33 @@
           />
         </el-card>
         
+        <!-- 天地图对比卡片 -->
+        <el-card style="margin-top: 15px">
+          <template #header>
+            <span>🗺️ 天地图对比</span>
+            <el-button size="small" text @click="checkTiandituAvailability">检查</el-button>
+          </template>
+          <div v-if="tiandituAvailable" class="tianditu-info">
+            <el-tag type="success" size="small">天地图可用</el-tag>
+            <div style="margin-top: 10px; font-size: 13px; color: #606266">
+              服务器已配置天地图服务
+            </div>
+            <div style="margin-top: 10px; font-size: 12px; color: #909399">
+              <el-button 
+                size="small" 
+                @click="compareWithTianditu"
+                :loading="compareWithTiandituLoading"
+                :disabled="!routeForm.startNode || !routeForm.endNode"
+              >
+                🔄 与天地图对比
+              </el-button>
+            </div>
+          </div>
+          <div v-else style="color: #909399; font-size: 13px">
+            服务暂不可用
+          </div>
+        </el-card>
+        
         <!-- 图例 -->
         <el-card style="margin-top: 15px">
           <template #header>
@@ -319,6 +346,7 @@ import { getNodes } from '@/api/nodes'
 import { recommendRoute } from '@/api/routes'
 import { getMapNodes, getMapRoutes } from '@/api/map'
 import { drivingRoute, multiRoute, trafficAtNode, compareRoutes } from '@/api/amap'
+import { drivingRoute as tiandituDrivingRoute, compareWithAmap as compareWithTiandituApi, getKeysInfo } from '@/api/tianditu'
 import WeatherCard from '@/components/WeatherCard.vue'
 import TrafficMonitor from '@/components/TrafficMonitor.vue'
 
@@ -337,6 +365,11 @@ const currentWeather = ref(null)  // 当前天气数据
 const useAmap = ref(true)
 const showTraffic = ref(false)
 const mapType = ref('standard')
+
+// 天地图相关
+const tiandituAvailable = ref(false)
+const compareWithTiandituLoading = ref(false)
+const tiandituComparisonResult = ref(null)
 
 const routeForm = ref({
   startNode: null,
@@ -664,6 +697,125 @@ const refreshTraffic = () => {
   } else {
     ElMessage.info('请先选择一个节点')
   }
+}
+
+// 检查天地图服务可用性
+const checkTiandituAvailability = async () => {
+  try {
+    const response = await getKeysInfo()
+    tiandituAvailable.value = response.browser_key_configured || response.server_key_configured
+    if (tiandituAvailable.value) {
+      ElMessage.success('天地图服务可用')
+    } else {
+      ElMessage.warning('天地图服务未配置')
+    }
+  } catch (error) {
+    console.error('检查天地图服务失败:', error)
+    tiandituAvailable.value = false
+    ElMessage.error('检查天地图服务失败')
+  }
+}
+
+// 与天地图对比
+const compareWithTianditu = async () => {
+  if (!routeForm.value.startNode || !routeForm.value.endNode) {
+    ElMessage.warning('请选择起点和终点')
+    return
+  }
+  
+  compareWithTiandituLoading.value = true
+  
+  try {
+    const response = await compareWithTiandituApi(
+      routeForm.value.startNode,
+      routeForm.value.endNode
+    )
+    
+    if (response.success) {
+      tiandituComparisonResult.value = response
+      ElMessage.success('天地图对比完成！')
+      
+      // 显示对比结果
+      showTiandituComparison(response)
+    } else {
+      ElMessage.error(response.error || '对比失败')
+    }
+  } catch (error) {
+    console.error('天地图对比失败:', error)
+    ElMessage.error('天地图对比失败')
+  } finally {
+    compareWithTiandituLoading.value = false
+  }
+}
+
+// 显示天地图对比结果
+const showTiandituComparison = (result) => {
+  // 在地图上绘制天地图路线
+  if (result.tianditu && result.tianditu.success && result.tianditu.polyline) {
+    drawTiandituRoute(result.tianditu.polyline)
+  }
+  
+  // 显示详细对比信息
+  console.log('天地图对比结果:', result)
+  
+  // 显示差异分析
+  if (result.comparison) {
+    const { distance_diff, duration_diff, better_distance, better_duration } = result.comparison
+    let msg = `路线对比分析:\n`
+    msg += `- 距离差值: ${distance_diff > 0 ? '+' : ''}${distance_diff.toFixed(2)} km (${better_distance})\n`
+    msg += `- 时长差值: ${duration_diff > 0 ? '+' : ''}${duration_diff.toFixed(1)} min (${better_duration})\n`
+    msg += `- 天地图更优: ${distance_diff < 0 && duration_diff < 0 ? '是' : '否'}\n`
+    
+    ElMessage.info(msg)
+  }
+}
+
+// 绘制天地图路线
+const drawTiandituRoute = (polyline) => {
+  const L = window.L
+  if (!L || !map || !polyline || polyline.length < 2) return
+  
+  // 清除之前的路线
+  routeLines.forEach(l => map.removeLayer(l))
+  routeLines = []
+  
+  // 转换坐标 [[lng, lat], ...] -> [[lat, lng], ...]
+  const coords = polyline.map(coord => [coord[1], coord[0]])
+  
+  // 绘制路线
+  const line = L.polyline(coords, {
+    color: '#FF6B6B',  // 使用橙红色区分
+    weight: 5,
+    opacity: 0.9
+  }).addTo(map)
+  
+  routeLines.push(line)
+  
+  // 添加起点终点标记
+  const startMarker = L.circleMarker(coords[0], {
+    radius: 10,
+    fillColor: '#67C23A',
+    color: '#fff',
+    weight: 2,
+    opacity: 1,
+    fillOpacity: 1
+  }).addTo(map)
+  startMarker.bindPopup('起点(天地图)')
+  routeLines.push(startMarker)
+  
+  const endMarker = L.circleMarker(coords[coords.length - 1], {
+    radius: 10,
+    fillColor: '#F56C6C',
+    color: '#fff',
+    weight: 2,
+    opacity: 1,
+    fillOpacity: 1
+  }).addTo(map)
+  endMarker.bindPopup('终点(天地图)')
+  routeLines.push(endMarker)
+  
+  // 调整地图视野
+  map.fitBounds(line.getBounds(), { padding: [50, 50] })
 }
 
 // 处理路况监控的路线变更

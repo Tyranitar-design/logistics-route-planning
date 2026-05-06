@@ -24,15 +24,48 @@ class VRPData:
     customers: np.ndarray
     demands: np.ndarray
     distance_matrix: Optional[np.ndarray] = None
+    duration_matrix: Optional[np.ndarray] = None
+    distance_precision: Dict[str, Any] = field(default_factory=dict)
+    source_summary: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
-        """自动计算距离矩阵"""
+        """初始化并校验矩阵数据"""
+        self.depot = np.array(self.depot, dtype=float)
+        self.customers = np.array(self.customers, dtype=float)
+        self.demands = np.array(self.demands)
+        
         if self.distance_matrix is None:
             self._compute_distance_matrix()
+            self.metadata.setdefault('distance_source', 'euclidean_fallback')
+        else:
+            self.distance_matrix = np.array(self.distance_matrix, dtype=float)
+            self._validate_matrix_shape(self.distance_matrix, 'distance_matrix')
+            self.metadata.setdefault('distance_source', 'external_injected')
+        
+        if self.duration_matrix is not None:
+            self.duration_matrix = np.array(self.duration_matrix, dtype=float)
+            self._validate_matrix_shape(self.duration_matrix, 'duration_matrix')
+        
+        self.distance_precision = dict(self.distance_precision or {})
+        self.source_summary = dict(self.source_summary or {})
+        self.metadata = dict(self.metadata or {})
+    
+    @property
+    def n_nodes(self) -> int:
+        return self.n_customers + 1
+    
+    def _validate_matrix_shape(self, matrix: np.ndarray, field_name: str):
+        """校验矩阵维度必须为 (n_customers + 1, n_customers + 1)"""
+        expected = (self.n_nodes, self.n_nodes)
+        if matrix.shape != expected:
+            raise ValueError(
+                f'{field_name} 维度错误，期望 {expected}，实际 {matrix.shape}'
+            )
     
     def _compute_distance_matrix(self):
-        """计算距离矩阵"""
-        n = self.n_customers + 1
+        """计算距离矩阵（兼容 fallback：欧氏距离）"""
+        n = self.n_nodes
         
         # 确保 depot 和 customers 是正确的形状
         depot = np.array(self.depot).reshape(-1)[:2].reshape(1, 2)
@@ -61,7 +94,8 @@ class VRPData:
             vehicle_capacity=capacity,
             depot=depot,
             customers=customers,
-            demands=demands
+            demands=demands,
+            metadata={'distance_source': 'euclidean_fallback'}
         )
 
 
@@ -347,10 +381,19 @@ class MultiObjectiveVRP(VRPProblem):
         
         Returns:
             [总距离, 总时间, 车辆数]
+            
+        时间目标：优先使用 duration_matrix（真实时长），
+        缺失时退化为 distance_matrix 近似。
         """
         total_distance = 0.0
         total_time = 0.0
         n_vehicles = len(solution)
+        
+        # 判断是否有真实时长矩阵
+        has_duration = (
+            self.data.duration_matrix is not None
+            and np.any(self.data.duration_matrix > 0)
+        )
         
         for route in solution:
             if len(route) < 1:
@@ -363,7 +406,12 @@ class MultiObjectiveVRP(VRPProblem):
             first = route[0]
             dist = self.data.distance_matrix[0, first]
             route_distance += dist
-            route_time += dist
+            
+            # 时间：优先用 duration_matrix
+            if has_duration:
+                route_time += self.data.duration_matrix[0, first]
+            else:
+                route_time += dist  # 退化为距离近似
             
             # 客户之间
             for i in range(len(route)):
@@ -374,12 +422,20 @@ class MultiObjectiveVRP(VRPProblem):
                     next_customer = route[i+1]
                     dist = self.data.distance_matrix[customer, next_customer]
                     route_distance += dist
-                    route_time += dist
+                    
+                    if has_duration:
+                        route_time += self.data.duration_matrix[customer, next_customer]
+                    else:
+                        route_time += dist
             
             # 返回仓库
             last = route[-1]
             route_distance += self.data.distance_matrix[last, 0]
-            route_time += self.data.distance_matrix[last, 0]
+            
+            if has_duration:
+                route_time += self.data.duration_matrix[last, 0]
+            else:
+                route_time += self.data.distance_matrix[last, 0]
             
             total_distance += route_distance
             total_time += route_time

@@ -21,12 +21,14 @@ class SolverType(Enum):
     GUROBI = "gurobi"           # Gurobi 精确求解
     GUROBI_VRPTW = "gurobi_vrptw"  # Gurobi VRPTW
     ORTOOLS = "ortools"         # OR-Tools 启发式
+    PYVRP = "pyvrp"             # PyVRP 现代求解器 🆕
     PYMOO_NSGA2 = "pymoo_nsga2" # pymoo NSGA-II
     PYMOO_NSGA3 = "pymoo_nsga3" # pymoo NSGA-III
     GENETIC = "genetic"         # 遗传算法
     ALNS = "alns"               # 自适应大邻域搜索
     COLUMN_GENERATION = "column_generation"  # 列生成
     LAGRANGIAN = "lagrangian"   # 拉格朗日松弛
+    DRL_VRP = "drl_vrp"         # 深度强化学习VRP 🆕
 
 
 class ProblemType(Enum):

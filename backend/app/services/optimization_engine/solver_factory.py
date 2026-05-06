@@ -28,7 +28,9 @@ from .solvers import (
     GurobiVRPTWSolver,
     ALNSSolver,
     ColumnGenerationSolver,
-    LagrangianSolver
+    LagrangianSolver,
+    PyVRPSolver,      # 🆕 2026-04-25
+    DRLVRPSolver,     # 🆕 2026-04-25
 )
 
 
@@ -43,16 +45,20 @@ class SolverFactory:
     RECOMMENDATIONS: Dict[ProblemType, List[SolverType]] = {
         ProblemType.VRP: [
             SolverType.ORTOOLS,      # 首选：快速
+            SolverType.PYVRP,        # 🆕 现代化求解器
             SolverType.GUROBI,       # 精确求解
+            SolverType.DRL_VRP,      # 🆕 深度学习
             SolverType.GENETIC,      # 启发式
         ],
         ProblemType.CVRP: [
+            SolverType.PYVRP,        # 🆕 推荐 PyVRP
             SolverType.ORTOOLS,
             SolverType.GUROBI,
             SolverType.COLUMN_GENERATION,  # 大规模
             SolverType.ALNS,
         ],
         ProblemType.VRPTW: [
+            SolverType.PYVRP,        # 🆕 支持时间窗
             SolverType.ORTOOLS,
             SolverType.GUROBI,
         ],
@@ -268,6 +274,20 @@ class SolverFactory:
                 "pros": "提供下界，适合约束复杂的问题",
                 "cons": "需要问题结构适合松弛",
                 "best_for": "约束复杂的问题"
+            },
+            SolverType.PYVRP: {
+                "name": "PyVRP",
+                "description": "现代开源 VRP 求解器，混合遗传搜索",
+                "pros": "速度快，支持多种 VRP 变体",
+                "cons": "仅支持 VRP 类问题",
+                "best_for": "CVRP/VRPTW/PDP/MDVRP"
+            },
+            SolverType.DRL_VRP: {
+                "name": "DRL-VRP",
+                "description": "深度强化学习 VRP 求解器",
+                "pros": "推理速度快（毫秒级）",
+                "cons": "需要预训练模型",
+                "best_for": "实时调度、快速响应"
             }
         }
         

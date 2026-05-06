@@ -3,15 +3,30 @@
 """
 高级路径规划算法服务
 支持 Dijkstra、A*、多目标优化等算法
+
+v2.0 升级：
+- 集成距离缓存服务（高德批量距离 + SQLite 缓存）
+- Haversine 修正系数 1.3× 作为兜底
+- 距离精度从直线距离提升为实际道路距离
+
+作者: 小彩
+日期: 2026-05-04
 """
 
 import math
 import heapq
+import time as _time
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 from app.models import db
 from app.models import Node, Route
+
+# 距离修正系数（Haversine 直线 → 实际道路）
+DISTANCE_CORRECTION_FACTOR = 1.3
+
+# 默认平均车速（km/h），用于估算时间
+DEFAULT_AVG_SPEED_KMH = 60.0
 
 
 class OptimizeTarget(Enum):
@@ -40,10 +55,23 @@ class PathResult:
 class PathAlgorithmService:
     """路径算法服务"""
     
-    def __init__(self):
+    def __init__(self, use_cache: bool = True):
         self.nodes_cache = {}
         self.adjacency_list = {}
+        self.use_cache = use_cache
+        self._distance_cache = None
         self._load_data()
+    
+    @property
+    def distance_cache(self):
+        """懒加载距离缓存服务"""
+        if self._distance_cache is None and self.use_cache:
+            try:
+                from app.services.distance_cache_service import get_distance_cache
+                self._distance_cache = get_distance_cache()
+            except Exception:
+                self._distance_cache = None
+        return self._distance_cache
     
     def _load_data(self):
         """加载节点和路线数据构建图"""
@@ -94,7 +122,15 @@ class PathAlgorithmService:
                 })
     
     def _calculate_direct_distance(self, node_id1: int, node_id2: int) -> float:
-        """计算两节点之间的直线距离（Haversine公式）"""
+        """
+        计算两节点之间的距离
+        
+        策略：
+        1. 如果路线数据库中有 distance 字段，优先使用（可能是历史高德数据）
+        2. 否则使用 Haversine × 修正系数 1.3
+        
+        注意：精确距离应通过距离缓存服务获取（get_precise_distance 方法）
+        """
         node1 = self.nodes_cache.get(node_id1)
         node2 = self.nodes_cache.get(node_id2)
         
@@ -110,10 +146,11 @@ class PathAlgorithmService:
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
         c = 2 * math.asin(math.sqrt(a))
         
-        return R * c
+        # 修正系数：直线距离 × 1.3 ≈ 实际道路距离
+        return R * c * DISTANCE_CORRECTION_FACTOR
     
     def _heuristic(self, node_id: int, target_id: int) -> float:
-        """A*算法的启发函数 - 使用直线距离"""
+        """A*算法的启发函数 - 使用修正后的直线距离"""
         return self._calculate_direct_distance(node_id, target_id)
     
     def _get_weight(self, edge: Dict, optimize_by: str) -> float:
@@ -453,12 +490,200 @@ class PathAlgorithmService:
         return routes[:max_routes]
 
 
+    # ------------------------------------------------------------------
+    # 精确距离获取（通过缓存服务）
+    # ------------------------------------------------------------------
+    
+    def get_precise_distance(
+        self,
+        node_id1: int,
+        node_id2: int,
+        strategy: int = 0
+    ) -> Dict:
+        """
+        获取两点间的精确距离
+        
+        三层策略：
+        1. 查 SQLite 缓存
+        2. 调高德批量距离 API
+        3. 兜底 Haversine × 1.3
+        
+        Args:
+            node_id1: 起点 ID
+            node_id2: 终点 ID
+            strategy: 高德路线策略
+        
+        Returns:
+            {
+                'distance_km': float,
+                'duration_minutes': float,
+                'source': str,  # 'cache' | 'amap' | 'haversine_corrected'
+                'is_exact': bool
+            }
+        """
+        node1 = self.nodes_cache.get(node_id1)
+        node2 = self.nodes_cache.get(node_id2)
+        
+        if not node1 or not node2:
+            return {
+                'distance_km': float('inf'),
+                'duration_minutes': float('inf'),
+                'source': 'unavailable',
+                'is_exact': False
+            }
+        
+        origin = (float(node1['longitude'] or 0), float(node1['latitude'] or 0))
+        destination = (float(node2['longitude'] or 0), float(node2['latitude'] or 0))
+        
+        if self.distance_cache:
+            return self.distance_cache.get_distance(origin, destination, strategy)
+        
+        # 无缓存服务时，回退到 Haversine × 1.3
+        dist_km = self._calculate_direct_distance(node_id1, node_id2)
+        dur_min = (dist_km / DEFAULT_AVG_SPEED_KMH) * 60
+        
+        return {
+            'distance_km': round(dist_km, 2),
+            'duration_minutes': round(dur_min, 1),
+            'source': 'haversine_corrected',
+            'is_exact': False
+        }
+    
+    def build_precise_distance_matrix(
+        self,
+        node_ids: List[int] = None,
+        strategy: int = 0
+    ) -> Dict:
+        """
+        构建精确距离矩阵（用于 VRP 等全局优化）
+        
+        使用高德批量距离 API + 缓存，一次性获取所有节点间的距离。
+        
+        Args:
+            node_ids: 节点 ID 列表（None 则使用所有活跃节点）
+            strategy: 高德路线策略
+        
+        Returns:
+            {
+                'node_ids': [id1, id2, ...],
+                'distance_matrix_km': [[dist, ...], ...],
+                'duration_matrix_min': [[dur, ...], ...],
+                'precision': {
+                    'exact_count': int,   # 高德精确距离条数
+                    'approx_count': int,  # Haversine 近似条数
+                    'total_count': int
+                }
+            }
+        """
+        if node_ids is None:
+            node_ids = list(self.nodes_cache.keys())
+        
+        n = len(node_ids)
+        
+        if n == 0:
+            return {
+                'node_ids': [],
+                'distance_matrix_km': [],
+                'duration_matrix_min': [],
+                'precision': {'exact_count': 0, 'approx_count': 0, 'total_count': 0}
+            }
+        
+        # 构建坐标列表
+        origins = []
+        for nid in node_ids:
+            node = self.nodes_cache.get(nid)
+            if node:
+                origins.append((
+                    float(node['longitude'] or 0),
+                    float(node['latitude'] or 0)
+                ))
+            else:
+                origins.append((0.0, 0.0))
+        
+        # 使用缓存服务获取距离矩阵
+        if self.distance_cache:
+            result = self.distance_cache.get_distance_matrix(
+                origins, origins, strategy
+            )
+            
+            # 转换为 km 和 minutes
+            dist_matrix = []
+            dur_matrix = []
+            exact_count = 0
+            approx_count = 0
+            
+            for i in range(n):
+                dist_row = []
+                dur_row = []
+                for j in range(n):
+                    cell = result['matrix'][i][j]
+                    if cell:
+                        dist_row.append(cell['distance_km'])
+                        dur_row.append(cell['duration_minutes'])
+                        if cell.get('is_exact'):
+                            exact_count += 1
+                        else:
+                            approx_count += 1
+                    else:
+                        # 自身到自身
+                        dist_row.append(0.0)
+                        dur_row.append(0.0)
+                dist_matrix.append(dist_row)
+                dur_matrix.append(dur_row)
+            
+            return {
+                'node_ids': node_ids,
+                'distance_matrix_km': dist_matrix,
+                'duration_matrix_min': dur_matrix,
+                'precision': {
+                    'exact_count': exact_count,
+                    'approx_count': approx_count,
+                    'total_count': n * n
+                },
+                'cache_stats': {
+                    'cache_hits': result.get('cache_hits', 0),
+                    'amap_calls': result.get('amap_calls', 0),
+                    'haversine_fallbacks': result.get('haversine_fallbacks', 0)
+                }
+            }
+        
+        # 无缓存服务，回退到 Haversine × 1.3
+        dist_matrix = []
+        dur_matrix = []
+        
+        for i in range(n):
+            dist_row = []
+            dur_row = []
+            for j in range(n):
+                if i == j:
+                    dist_row.append(0.0)
+                    dur_row.append(0.0)
+                else:
+                    d = self._calculate_direct_distance(node_ids[i], node_ids[j])
+                    dist_row.append(round(d, 2))
+                    dur_row.append(round((d / DEFAULT_AVG_SPEED_KMH) * 60, 1))
+            dist_matrix.append(dist_row)
+            dur_matrix.append(dur_row)
+        
+        total = n * n
+        return {
+            'node_ids': node_ids,
+            'distance_matrix_km': dist_matrix,
+            'duration_matrix_min': dur_matrix,
+            'precision': {
+                'exact_count': 0,
+                'approx_count': total - n,  # 对角线为0不算
+                'total_count': total
+            }
+        }
+
+
 # 单例实例
 _path_service = None
 
-def get_path_service() -> PathAlgorithmService:
+def get_path_service(use_cache: bool = True) -> PathAlgorithmService:
     """获取路径服务实例"""
     global _path_service
     if _path_service is None:
-        _path_service = PathAlgorithmService()
+        _path_service = PathAlgorithmService(use_cache=use_cache)
     return _path_service

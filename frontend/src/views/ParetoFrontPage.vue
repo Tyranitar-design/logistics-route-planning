@@ -87,15 +87,25 @@
       <el-col :span="16">
         <el-card>
           <template #header>
-            <span>📈 Pareto 前沿 - 非支配解集空间</span>
-            <el-tag v-if="displayMode === '3d'" type="warning" size="small" style="margin-left: 10px">3D 可视化</el-tag>
-            <el-tag v-else type="info" size="small" style="margin-left: 10px">2D 投影</el-tag>
+            <span>📈 Pareto 前沿可视化</span>
+            <el-tag type="info" size="small" style="margin-left: 10px">B4 新组件集成</el-tag>
           </template>
-          
-          <div ref="paretoChartRef" style="width: 100%; height: 450px;"></div>
+
+          <div class="visual-stack">
+            <ParetoScatterPlot
+              :solutions="paretoRecommendationCards"
+              :objective-labels="objectiveLabels"
+            />
+
+            <ParallelCoordinatesChart
+              :solutions="paretoRecommendationCards"
+              :objective-labels="objectiveLabels"
+            />
+          </div>
         </el-card>
         
         <!-- 解集详情 -->
+
         <el-card v-if="paretoSolutions.length > 0" style="margin-top: 20px">
           <template #header>
             <span>📋 解集详情（非支配解）</span>
@@ -139,9 +149,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import ParetoScatterPlot from '../components/ParetoScatterPlot.vue'
+import ParallelCoordinatesChart from '../components/ParallelCoordinatesChart.vue'
 import * as echarts from 'echarts'
 import 'echarts-gl'
 
@@ -162,6 +174,25 @@ const params = ref({
 
 // 演示数据
 const demoData = ref(null)
+
+const objectiveLabels = {
+  distance: '距离',
+  time: '时间',
+  vehicles: '车辆数'
+}
+
+const paretoRecommendationCards = computed(() => {
+  return paretoSolutions.value.map((row, index) => ({
+    type: index === 0 ? 'weighted_best' : 'pareto',
+    title: index === 0 ? '推荐最优' : `Pareto 方案 ${index + 1}`,
+    description: `距离 ${row[0]?.toFixed(1)} km / 时间 ${row[1]?.toFixed(1)} min / 车辆 ${Math.round(row[2])}`,
+    objectives: {
+      distance: Number(row[0] || 0),
+      time: Number(row[1] || 0),
+      vehicles: Number(row[2] || 0)
+    }
+  }))
+})
 
 // 加载演示数据
 async function loadDemoData() {
@@ -472,6 +503,12 @@ onMounted(() => {
 <style scoped>
 .pareto-front-page {
   padding: 20px;
+}
+
+.visual-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .page-header {

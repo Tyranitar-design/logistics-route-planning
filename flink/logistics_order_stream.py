@@ -13,7 +13,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Tuple
 
 # PyFlink imports
@@ -24,11 +24,66 @@ from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
 from pyflink.datastream.connectors.elasticsearch import Elasticsearch7SinkBuilder
 from pyflink.datastream.functions import MapFunction, ProcessWindowFunction, KeyedProcessFunction
+from pyflink.datastream.output_tag import OutputTag
 from pyflink.datastream.window import TumblingEventTimeWindows, SlidingEventTimeWindows, Time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _current_epoch_millis() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def parse_event_time_to_epoch_millis(raw_value: Any) -> int:
+    """将订单中的事件时间统一转换为 epoch milliseconds。"""
+    if raw_value is None:
+        return _current_epoch_millis()
+
+    if isinstance(raw_value, (int, float)):
+        value = int(raw_value)
+        return value * 1000 if value < 10_000_000_000 else value
+
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        if not value:
+            return _current_epoch_millis()
+
+        if value.isdigit():
+            numeric = int(value)
+            return numeric * 1000 if numeric < 10_000_000_000 else numeric
+
+        normalized = value.replace('Z', '+00:00')
+        try:
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            logger.warning(f"无法解析 event_time，回退到当前处理时间: {raw_value}")
+
+    return _current_epoch_millis()
+
+
+class OrderEventTimestampAssigner:
+    """从解析后的订单对象中提取事件时间。"""
+
+    def extract_timestamp(self, value: Dict[str, Any], record_timestamp: int) -> int:
+        event_time_millis = value.get('event_time_millis')
+        if event_time_millis is not None:
+            return int(event_time_millis)
+        return record_timestamp if record_timestamp and record_timestamp > 0 else _current_epoch_millis()
+
+
+def build_order_watermark_strategy() -> WatermarkStrategy:
+    """构建订单流事件时间 watermark 策略。"""
+    return (
+        WatermarkStrategy
+        .for_bounded_out_of_orderness(Duration.of_seconds(30))
+        .with_timestamp_assigner(OrderEventTimestampAssigner())
+        .with_idleness(Duration.of_minutes(1))
+    )
 
 
 # ============================================
@@ -41,6 +96,8 @@ class OrderParser(MapFunction):
     def map(self, value: str) -> Dict[str, Any]:
         try:
             order = json.loads(value)
+            raw_event_time = order.get('event_time') or order.get('created_at')
+            event_time_millis = parse_event_time_to_epoch_millis(raw_event_time)
             return {
                 'order_id': order.get('id') or order.get('order_id'),
                 'order_number': order.get('order_number'),
@@ -51,7 +108,9 @@ class OrderParser(MapFunction):
                 'created_at': order.get('created_at'),
                 'customer_name': order.get('customer_name', ''),
                 'vehicle_id': order.get('vehicle_id'),
-                'event_time': order.get('event_time') or order.get('created_at') or datetime.now().isoformat()
+                'event_time': raw_event_time,
+                'event_time_millis': event_time_millis,
+                'event_time_source': 'payload' if raw_event_time else 'processing_time_fallback'
             }
         except Exception as e:
             logger.error(f"解析订单失败: {e}, 原始数据: {value[:100]}")
@@ -220,6 +279,7 @@ def main():
     )
     
     logger.info("Kafka Source 已创建")
+    logger.info("当前 source 先以 no_watermarks() 读入，再在解析后的订单流上绑定事件时间 watermark 策略")
     
     # ============================================
     # 3. 解析订单数据
@@ -228,11 +288,18 @@ def main():
         OrderParser(),
         output_type=Types.MAP(Types.STRING(), Types.STRING())
     )
-    
-    # 过滤无效数据
-    valid_orders = parsed_orders.filter(
-        lambda order: order.get('order_id') is not None
+
+    watermark_strategy = build_order_watermark_strategy()
+
+    # 过滤无效数据，并在解析后的订单流上绑定事件时间语义
+    valid_orders = (
+        parsed_orders
+        .filter(lambda order: order.get('order_id') is not None)
+        .assign_timestamp_and_watermarks(watermark_strategy)
     )
+
+    late_orders_tag = OutputTag("late-orders", Types.MAP(Types.STRING(), Types.STRING()))
+    allowed_lateness_ms = 2 * 60 * 1000
     
     logger.info("订单数据解析器已配置")
     
@@ -244,11 +311,16 @@ def main():
         valid_orders
         .key_by(lambda order: order.get('status', 'unknown'))
         .window(TumblingEventTimeWindows.of(Time.minutes(5)))
+        .allowed_lateness(allowed_lateness_ms)
+        .side_output_late_data(late_orders_tag)
         .process(OrderStatsFunction(), Types.MAP(Types.STRING(), Types.STRING()))
     )
+
+    late_order_stats = order_stats.get_side_output(late_orders_tag)
     
     # 输出统计结果
     order_stats.print("📊 订单统计")
+    late_order_stats.print("🕒 超迟到订单")
     
     logger.info("窗口统计已配置")
     
@@ -279,6 +351,7 @@ def main():
         valid_orders
         .key_by(extract_route)
         .window(SlidingEventTimeWindows.of(Time.minutes(5), Time.minutes(1)))
+        .allowed_lateness(allowed_lateness_ms)
         .process(OrderStatsFunction(), Types.MAP(Types.STRING(), Types.STRING()))
     )
     

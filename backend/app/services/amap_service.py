@@ -443,38 +443,57 @@ class AmapService:
         """
         批量距离计算
         
+        高德距离接口更稳的调用方式是：
+        - 多起点 × 单终点
+        - 多终点场景在服务层逐终点拆分调用，再聚合结果
+        
         Args:
             origins: 起点列表
             destinations: 终点列表
             strategy: 路线策略
         
         Returns:
-            距离矩阵
+            {
+                'success': bool,
+                'results': [
+                    {
+                        'origin_id': '1',
+                        'dest_id': '1',
+                        'distance': 123,
+                        'duration': 456
+                    },
+                    ...
+                ]
+            }
         """
+        if not origins or not destinations:
+            return {'success': False, 'error': 'origins/destinations 不能为空'}
+
         origin_strs = [f"{o[0]},{o[1]}" for o in origins]
-        dest_strs = [f"{d[0]},{d[1]}" for d in destinations]
-        
-        params = {
-            'origins': '|'.join(origin_strs),
-            'destination': '|'.join(dest_strs),
-            'type': '1',  # 驾车距离
-            'strategy': strategy
-        }
-        
-        result = self._make_request('distance', params)
-        
-        if result.get('status') != '1':
-            return {'success': False, 'error': result.get('info', '距离计算失败')}
-        
         results = []
-        for item in result.get('results', []):
-            results.append({
-                'origin_id': item.get('origin_id'),
-                'dest_id': item.get('dest_id'),
-                'distance': int(item.get('distance', 0)),
-                'duration': int(item.get('duration', 0))
-            })
-        
+
+        for dest_idx, dest in enumerate(destinations, start=1):
+            params = {
+                'origins': '|'.join(origin_strs),
+                'destination': f"{dest[0]},{dest[1]}",
+                'type': '1',  # 驾车距离
+                'strategy': strategy
+            }
+
+            result = self._make_request('distance', params)
+
+            if result.get('status') != '1':
+                return {'success': False, 'error': result.get('info', '距离计算失败')}
+
+            raw_results = result.get('results', []) or []
+            for origin_idx, item in enumerate(raw_results, start=1):
+                results.append({
+                    'origin_id': item.get('origin_id') or str(origin_idx),
+                    'dest_id': item.get('dest_id') or str(dest_idx),
+                    'distance': int(item.get('distance', 0)),
+                    'duration': int(item.get('duration', 0))
+                })
+
         return {
             'success': True,
             'results': results

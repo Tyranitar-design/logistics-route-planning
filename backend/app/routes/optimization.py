@@ -12,6 +12,10 @@ from flask import Blueprint, request, jsonify
 from typing import Dict, Any
 import numpy as np
 
+from app.services.precise_distance_provider import get_precise_distance_provider
+from app.services.vrp_problem_builder import VRPProblemBuilder
+from app.services.solver_recommendation_engine import SolverRecommendationEngine
+from app.services.result_evaluator import ResultEvaluator
 from app.services.optimization_engine import (
     SolverFactory,
     VRPProblem,
@@ -25,6 +29,58 @@ from app.services.optimization_engine import (
 )
 
 optimization_bp = Blueprint('optimization', __name__)
+
+problem_builder = VRPProblemBuilder()
+recommendation_engine = SolverRecommendationEngine()
+evaluator = ResultEvaluator()
+
+
+def _build_vrp_data_from_request(data: Dict[str, Any]) -> VRPData:
+    """从请求构建带精确距离矩阵的 VRPData。"""
+    customers = np.array(data.get('customers', []), dtype=float)
+    demands = np.array(data.get('demands', []))
+    depot = np.array(data.get('depot', [50, 50]), dtype=float)
+    capacity = data.get('capacity', 50)
+    use_precise_distance = bool(data.get('use_precise_distance', True))
+    strategy = int(data.get('strategy', 0))
+
+    if len(customers) == 0:
+        raise ValueError('客户数据为空')
+    if len(demands) != len(customers):
+        raise ValueError('demands 长度必须与 customers 一致')
+
+    n_customers = len(customers)
+    n_vehicles = max(1, int(np.ceil(demands.sum() / capacity * 1.5)))
+
+    provider = get_precise_distance_provider()
+    matrix_result = provider.build_from_depot_and_customers(
+        depot=(float(depot[0]), float(depot[1])),
+        customers=[(float(row[0]), float(row[1])) for row in customers],
+        strategy=strategy,
+        use_amap=use_precise_distance,
+    )
+
+    vrp_data = VRPData(
+        n_customers=n_customers,
+        n_vehicles=n_vehicles,
+        vehicle_capacity=capacity,
+        depot=depot,
+        customers=customers,
+        demands=demands,
+        distance_matrix=np.array(matrix_result.distance_matrix_km, dtype=float),
+        duration_matrix=np.array(matrix_result.duration_matrix_min, dtype=float),
+        distance_precision=matrix_result.precision,
+        source_summary=matrix_result.source_summary,
+        metadata={
+            'distance_source': 'precise_distance_provider',
+            'distance_provider': matrix_result.metadata.get('provider', 'PreciseDistanceProvider'),
+            'strategy': strategy,
+            'use_precise_distance': use_precise_distance,
+            'cache_stats': matrix_result.cache_stats,
+        }
+    )
+
+    return vrp_data
 
 
 @optimization_bp.route('/solvers', methods=['GET'])
@@ -68,20 +124,14 @@ def solve_vrp():
     
     Request Body:
         {
-            "customers": [[x, y], ...],     # 客户坐标
-            "demands": [d1, d2, ...],       # 需求量
-            "depot": [x, y],                # 仓库坐标
-            "capacity": 50,                 # 车辆容量
-            "solver": "ortools",            # 求解器类型
-            "time_limit": 60                # 时间限制
-        }
-    
-    Returns:
-        {
-            "routes": [[1, 2, 3], [4, 5]],  # 路线
-            "total_distance": 123.45,       # 总距离
-            "solve_time": 1.23,             # 求解时间
-            "gap": 0.01                     # 最优间隙
+            "customers": [[x, y], ...],
+            "demands": [d1, d2, ...],
+            "depot": [x, y],
+            "capacity": 50,
+            "solver": "ortools" | "auto",
+            "time_limit": 60,
+            "use_precise_distance": true,
+            "strategy": 0
         }
     """
     data = request.get_json()
@@ -90,38 +140,30 @@ def solve_vrp():
         return jsonify({"success": False, "error": "请求数据为空"}), 400
     
     try:
-        # 解析数据
-        customers = np.array(data.get('customers', []))
-        demands = np.array(data.get('demands', []))
-        depot = np.array(data.get('depot', [50, 50]))
-        capacity = data.get('capacity', 50)
-        solver_type_str = data.get('solver', 'ortools')
+        solver_type_str = str(data.get('solver', 'auto')).lower()
         time_limit = data.get('time_limit', 60)
-        
-        if len(customers) == 0:
-            return jsonify({"success": False, "error": "客户数据为空"}), 400
-        
-        n_customers = len(customers)
-        
-        # 创建 VRP 数据
-        vrp_data = VRPData(
-            n_customers=n_customers,
-            n_vehicles=max(1, int(np.ceil(demands.sum() / capacity * 1.5))),
-            vehicle_capacity=capacity,
-            depot=depot,
-            customers=customers,
-            demands=demands
-        )
-        
-        # 创建问题
-        problem = CVRPProblem(vrp_data)
-        
-        # 解析求解器类型
-        solver_type = SolverType(solver_type_str)
-        
-        # 创建求解器并求解
+
+        build_result = problem_builder.build_from_payload(data)
+        problem = build_result.problem
+        vrp_data = build_result.vrp_data
+
+        recommendation = None
+        if solver_type_str == 'auto':
+            recommendation = recommendation_engine.recommend(
+                problem_type=build_result.problem_type,
+                n_customers=vrp_data.n_customers,
+                require_high_accuracy=bool(data.get('require_high_accuracy', False)),
+                prefer_fast_response=bool(data.get('prefer_fast_response', False)),
+                realtime=bool(data.get('realtime', False)),
+                available_solvers=SolverFactory.list_available_solvers(),
+            )
+            solver_type = recommendation.recommended_solver
+        else:
+            solver_type = SolverType(solver_type_str)
+
         solver = SolverFactory.create_solver(solver_type)
         result = solver.solve(problem, time_limit=time_limit)
+        quality_report = evaluator.evaluate(problem, result)
         
         return jsonify({
             "success": True,
@@ -129,7 +171,15 @@ def solve_vrp():
             "total_distance": float(result.primary_objective),
             "solve_time": float(result.solve_time),
             "gap": float(result.gap) if result.gap is not None else 0.0,
-            "solver": result.solver_name
+            "solver": result.solver_name,
+            "solver_type": solver_type.value,
+            "distance_precision": vrp_data.distance_precision,
+            "source_summary": vrp_data.source_summary,
+            "distance_metadata": vrp_data.metadata,
+            "result_metadata": result.metadata,
+            "build_metadata": build_result.build_metadata,
+            "quality_report": quality_report.to_dict(),
+            "recommendation": recommendation.to_dict() if recommendation else None,
         })
     
     except ValueError as e:
@@ -142,27 +192,6 @@ def solve_vrp():
 def compare_solvers():
     """
     对比多个求解器
-    
-    Request Body:
-        {
-            "customers": [[x, y], ...],
-            "demands": [d1, d2, ...],
-            "depot": [x, y],
-            "capacity": 50,
-            "solvers": ["ortools", "genetic", "gurobi"],
-            "time_limit": 60
-        }
-    
-    Returns:
-        {
-            "results": {
-                "ortools": {...},
-                "genetic": {...},
-                ...
-            },
-            "comparison": {...},
-            "best_solver": "ortools"
-        }
     """
     data = request.get_json()
     
@@ -170,38 +199,21 @@ def compare_solvers():
         return jsonify({"success": False, "error": "请求数据为空"}), 400
     
     try:
-        # 解析数据
-        customers = np.array(data.get('customers', []))
-        demands = np.array(data.get('demands', []))
-        depot = np.array(data.get('depot', [50, 50]))
-        capacity = data.get('capacity', 50)
         solver_strs = data.get('solvers', ['ortools', 'genetic'])
         time_limit = data.get('time_limit', 60)
-        
-        if len(customers) == 0:
-            return jsonify({"success": False, "error": "客户数据为空"}), 400
-        
-        n_customers = len(customers)
-        
-        vrp_data = VRPData(
-            n_customers=n_customers,
-            n_vehicles=max(1, int(np.ceil(demands.sum() / capacity * 1.5))),
-            vehicle_capacity=capacity,
-            depot=depot,
-            customers=customers,
-            demands=demands
-        )
-        
-        problem = CVRPProblem(vrp_data)
+
+        build_result = problem_builder.build_from_payload(data)
+        problem = build_result.problem
+        vrp_data = build_result.vrp_data
         
         # 解析求解器类型（只选可用的）
         solver_types = []
         for s in solver_strs:
             try:
-                st = SolverType(s)
+                st = SolverType(str(s).lower())
                 if SolverFactory.is_available(st):
                     solver_types.append(st)
-            except:
+            except Exception:
                 pass
         
         if not solver_types:
@@ -210,14 +222,17 @@ def compare_solvers():
         # 用多个求解器求解
         results = SolverFactory.solve_with_all(problem, solver_types, time_limit)
         
-        # 格式化结果
+        # 格式化结果 + 质量报告
         formatted = {}
         for solver_type, result in results.items():
+            quality_report = evaluator.evaluate(problem, result)
             formatted[solver_type.value] = {
                 "routes": result.routes,
                 "total_distance": float(result.primary_objective),
                 "solve_time": float(result.solve_time),
-                "gap": float(result.gap) if result.gap is not None else 0.0
+                "gap": float(result.gap) if result.gap is not None else 0.0,
+                "result_metadata": result.metadata,
+                "quality_report": quality_report.to_dict(),
             }
         
         # 对比
@@ -227,9 +242,67 @@ def compare_solvers():
             "success": True,
             "results": formatted,
             "best_solver": comparison.best_solver.value if comparison.best_solver else None,
-            "rankings": [(s.value, float(score)) for s, score in comparison.rankings]
+            "rankings": [(s.value, float(score)) for s, score in comparison.rankings],
+            "distance_precision": vrp_data.distance_precision,
+            "source_summary": vrp_data.source_summary,
+            "distance_metadata": vrp_data.metadata,
+            "build_metadata": build_result.build_metadata,
         })
     
+    except ValueError as e:
+        return jsonify({"success": False, "error": f"参数错误: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@optimization_bp.route('/distance/precision-report', methods=['POST'])
+def distance_precision_report():
+    """
+    构建一次距离矩阵并返回精度报告。
+
+    Request Body:
+        {
+            "customers": [[lng, lat], ...],
+            "depot": [lng, lat],
+            "use_precise_distance": true,
+            "strategy": 0
+        }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"success": False, "error": "请求数据为空"}), 400
+
+    try:
+        vrp_data = _build_vrp_data_from_request({
+            **data,
+            'demands': data.get('demands', [1] * len(data.get('customers', []))),
+            'capacity': data.get('capacity', max(1, len(data.get('customers', [])) or 1)),
+        })
+
+        total_pairs = vrp_data.distance_precision.get('total_count', 0)
+        exact_pairs = vrp_data.distance_precision.get('exact_count', 0)
+        approx_pairs = vrp_data.distance_precision.get('approx_count', 0)
+        exact_ratio = round(exact_pairs / total_pairs, 4) if total_pairs else 0.0
+        approx_ratio = round(approx_pairs / total_pairs, 4) if total_pairs else 0.0
+
+        return jsonify({
+            "success": True,
+            "node_count": vrp_data.n_nodes,
+            "customer_count": vrp_data.n_customers,
+            "precision": vrp_data.distance_precision,
+            "source_summary": vrp_data.source_summary,
+            "distance_metadata": vrp_data.metadata,
+            "distance_matrix_shape": list(np.asarray(vrp_data.distance_matrix).shape),
+            "duration_matrix_shape": list(np.asarray(vrp_data.duration_matrix).shape) if vrp_data.duration_matrix is not None else None,
+            "summary": {
+                "exact_ratio": exact_ratio,
+                "approx_ratio": approx_ratio,
+            }
+        })
+
+    except ValueError as e:
+        return jsonify({"success": False, "error": f"参数错误: {str(e)}"}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -238,26 +311,6 @@ def compare_solvers():
 def solve_multi_objective():
     """
     求解多目标 VRP
-    
-    Request Body:
-        {
-            "customers": [[x, y], ...],
-            "demands": [d1, d2, ...],
-            "service_times": [t1, t2, ...],
-            "depot": [x, y],
-            "capacity": 50,
-            "solver": "pymoo_nsga2",
-            "n_gen": 100
-        }
-    
-    Returns:
-        {
-            "pareto_front": [[f1, f2, f3], ...],
-            "best_solution": {
-                "routes": [...],
-                "objectives": [f1, f2, f3]
-            }
-        }
     """
     data = request.get_json()
     
@@ -265,43 +318,40 @@ def solve_multi_objective():
         return jsonify({"success": False, "error": "请求数据为空"}), 400
     
     try:
-        customers = np.array(data.get('customers', []))
-        demands = np.array(data.get('demands', []))
-        service_times = np.array(data.get('service_times', np.zeros(len(customers)))) if len(customers) > 0 else np.array([])
-        depot = np.array(data.get('depot', [50, 50]))
-        capacity = data.get('capacity', 50)
-        solver_type_str = data.get('solver', 'pymoo_nsga2')
+        payload = {
+            **data,
+            'problem_type': 'multi_objective'
+        }
+        solver_type_str = str(data.get('solver', 'pymoo_nsga2')).lower()
         n_gen = data.get('n_gen', 100)
-        
-        if len(customers) == 0:
-            return jsonify({"success": False, "error": "客户数据为空"}), 400
-        
-        n_customers = len(customers)
-        
-        vrp_data = VRPData(
-            n_customers=n_customers,
-            n_vehicles=max(1, int(np.ceil(demands.sum() / capacity * 1.5))),
-            vehicle_capacity=capacity,
-            depot=depot,
-            customers=customers,
-            demands=demands
-        )
-        
-        problem = MultiObjectiveVRP(vrp_data, service_times)
-        
+
+        build_result = problem_builder.build_from_payload(payload)
+        problem = build_result.problem
+        vrp_data = build_result.vrp_data
+
         solver_type = SolverType(solver_type_str)
-        
         solver = SolverFactory.create_solver(solver_type)
         result = solver.solve(problem, n_gen=n_gen)
+        quality_report = evaluator.evaluate(problem, result)
         
         return jsonify({
             "success": True,
             "routes": result.routes,
             "objectives": [float(x) for x in result.objective_values],
             "pareto_front_size": int(result.metadata.get('pareto_front_size', 1)),
-            "solve_time": float(result.solve_time)
+            "solve_time": float(result.solve_time),
+            "solver": result.solver_name,
+            "solver_type": solver_type.value,
+            "distance_precision": vrp_data.distance_precision,
+            "source_summary": vrp_data.source_summary,
+            "distance_metadata": vrp_data.metadata,
+            "result_metadata": result.metadata,
+            "build_metadata": build_result.build_metadata,
+            "quality_report": quality_report.to_dict(),
         })
     
+    except ValueError as e:
+        return jsonify({"success": False, "error": f"参数错误: {str(e)}"}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

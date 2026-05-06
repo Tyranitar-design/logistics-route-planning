@@ -200,8 +200,14 @@ class TestDataGenerator:
         self.created_vehicles = vehicles
         return vehicles
     
-    def generate_orders(self, count=50, clear_existing=False):
-        """生成订单数据"""
+    def generate_orders(self, count=50, clear_existing=False, force_status=None):
+        """生成订单数据
+        
+        Args:
+            count: 订单数量
+            clear_existing: 是否清除现有订单
+            force_status: 强制指定订单状态（如 'pending'）
+        """
         import time
         
         if clear_existing:
@@ -235,8 +241,10 @@ class TestDataGenerator:
             days_ago = random.randint(0, 30)
             order_date = datetime.now() - timedelta(days=days_ago)
             
-            # 根据日期确定状态
-            if days_ago > 7:
+            # 根据日期确定状态，或使用强制状态
+            if force_status:
+                status = force_status
+            elif days_ago > 7:
                 status = random.choices(
                     self.ORDER_STATUSES,
                     weights=[0.05, 0.1, 0.8, 0.05]

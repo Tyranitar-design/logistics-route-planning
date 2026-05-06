@@ -1,0 +1,9 @@
+schema: spec-driven
+created: 2026-05-05
+parent_spec: docs/superpowers/specs/2026-05-05-logistics-algorithm-engine-upgrade.md
+phases:
+  - B1-distance-unification
+  - B2-multi-objective-precision
+  - B3-solver-intelligence
+  - B4-frontend-visualization
+  - B5-integration-testing

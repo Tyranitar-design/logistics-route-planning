@@ -64,10 +64,39 @@
       <!-- 右侧：可视化对比 -->
       <div class="right-panel">
         <el-card v-if="result">
-          <RouteCompareChart
-            :routes="result.recommendations"
-            :selected-indices="selectedIndices"
-          />
+          <div class="right-panel-stack">
+            <SolverRecommendationCard
+              v-if="result.recommendation"
+              :recommendation="result.recommendation"
+            />
+
+            <DistancePrecisionCard
+              v-if="result.distance_precision"
+              :distance-precision="result.distance_precision"
+              :source-summary="result.source_summary"
+              :distance-metadata="result.distance_metadata"
+            />
+
+            <QualityReportPanel
+              v-if="result.quality_report"
+              :report="result.quality_report"
+            />
+
+            <ParetoScatterPlot
+              v-if="result.recommendations && result.recommendations.length"
+              :solutions="result.recommendations"
+            />
+
+            <ParallelCoordinatesChart
+              v-if="result.recommendations && result.recommendations.length"
+              :solutions="result.recommendations"
+            />
+
+            <RouteCompareChart
+              :routes="result.recommendations || []"
+              :selected-indices="selectedIndices"
+            />
+          </div>
         </el-card>
         
         <el-empty v-else description="请选择起终点并开始优化" />
@@ -91,6 +120,11 @@ import { ref, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import MultiObjectivePanel from '../components/MultiObjectivePanel.vue'
 import RouteCompareChart from '../components/RouteCompareChart.vue'
+import SolverRecommendationCard from '../components/SolverRecommendationCard.vue'
+import DistancePrecisionCard from '../components/DistancePrecisionCard.vue'
+import QualityReportPanel from '../components/QualityReportPanel.vue'
+import ParetoScatterPlot from '../components/ParetoScatterPlot.vue'
+import ParallelCoordinatesChart from '../components/ParallelCoordinatesChart.vue'
 import { getAllNodes } from '../api/nodes'
 import * as echarts from 'echarts'
 
@@ -258,6 +292,12 @@ onMounted(() => {
 
 .right-panel {
   min-height: 500px;
+}
+
+.right-panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .map-preview {

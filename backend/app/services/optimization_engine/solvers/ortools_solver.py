@@ -73,6 +73,12 @@ class ORToolsSolver(OptimizationSolver):
         
         # 获取问题数据
         data = problem.data
+        distance_matrix = np.asarray(data.distance_matrix, dtype=float)
+        expected_shape = (data.n_customers + 1, data.n_customers + 1)
+        if distance_matrix.shape != expected_shape:
+            raise ValueError(
+                f"distance_matrix 维度错误，期望 {expected_shape}，实际 {distance_matrix.shape}"
+            )
         
         # 创建路由模型
         manager = pywrapcp.RoutingIndexManager(
@@ -86,7 +92,8 @@ class ORToolsSolver(OptimizationSolver):
         def distance_callback(from_index, to_index):
             from_node = manager.IndexToNode(from_index)
             to_node = manager.IndexToNode(to_index)
-            return int(data.distance_matrix[from_node][to_node] * 100)
+            # 统一使用 km(float) -> m(int)，避免精度损失
+            return int(round(distance_matrix[from_node][to_node] * 1000))
         
         transit_callback_index = routing.RegisterTransitCallback(distance_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
@@ -142,19 +149,19 @@ class ORToolsSolver(OptimizationSolver):
         
         # 提取路线
         routes = []
-        total_distance = 0
+        total_distance = 0.0
         
         for vehicle_id in range(data.n_vehicles):
             index = routing.Start(vehicle_id)
             route = []
-            route_distance = 0
+            route_distance_m = 0
             
             while not routing.IsEnd(index):
                 node = manager.IndexToNode(index)
                 route.append(node)
                 previous_index = index
                 index = solution.Value(routing.NextVar(index))
-                route_distance += routing.GetArcCostForVehicle(
+                route_distance_m += routing.GetArcCostForVehicle(
                     previous_index, index, vehicle_id
                 )
             
@@ -162,7 +169,7 @@ class ORToolsSolver(OptimizationSolver):
             
             if len(route) > 2:  # 非空路线
                 routes.append(route)
-                total_distance += route_distance / 100  # 还原
+                total_distance += route_distance_m / 1000.0
         
         # 创建结果
         result = OptimizationResult(
@@ -171,7 +178,16 @@ class ORToolsSolver(OptimizationSolver):
             solution=routes,
             objective_values=np.array([total_distance]),
             solve_time=0.0,  # 由装饰器填充
-            routes=routes
+            routes=routes,
+            metadata={
+                'distance_source': getattr(data, 'metadata', {}).get('distance_source', 'unknown'),
+                'distance_precision': getattr(data, 'distance_precision', {}),
+                'source_summary': getattr(data, 'source_summary', {}),
+                'distance_unit': 'km',
+                'ortools_cost_unit': 'm',
+                'first_solution_strategy': self.first_solution_strategy,
+                'local_search_metaheuristic': self.local_search_metaheuristic,
+            }
         )
         
         return result

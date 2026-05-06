@@ -3,7 +3,7 @@
     <!-- 页面标题 -->
     <div class="page-header">
       <h2>测试数据生成</h2>
-      <p class="subtitle">一键生成模拟数据，快速体验系统功能</p>
+      <p class="subtitle">一键生成模拟数据，快速体验系统功能。数据会自动同步到数据库，供所有功能使用。</p>
     </div>
 
     <!-- 当前数据统计 -->
@@ -69,8 +69,26 @@
     <!-- 数据生成 -->
     <el-card class="generate-card">
       <template #header>
-        <span>生成测试数据</span>
+        <div class="card-header">
+          <span>生成测试数据</span>
+          <el-tag v-if="status.nodes > 0" type="success">数据已同步</el-tag>
+        </div>
       </template>
+      
+      <el-alert 
+        v-if="status.nodes > 0" 
+        type="success" 
+        :closable="false"
+        style="margin-bottom: 15px;"
+      >
+        <template #title>
+          ✅ 数据库已同步
+        </template>
+        <div style="font-size: 12px;">
+          当前数据库有 {{ status.nodes }} 个节点、{{ status.vehicles }} 辆车、{{ status.orders }} 个订单。
+          你可以在<strong>智能调度</strong>、<strong>多目标优化</strong>等功能中使用这些数据。
+        </div>
+      </el-alert>
 
       <el-form :model="generateForm" label-width="100px">
         <el-row :gutter="20">
@@ -101,6 +119,12 @@
             <el-icon><MagicStick /></el-icon>
             一键生成全部数据
           </el-button>
+          <el-button type="success" @click="generatePendingOrders" :loading="generatingPending">
+            生成待配送订单
+          </el-button>
+        </el-form-item>
+        
+        <el-form-item>
           <el-button @click="generateNodes" :loading="generatingNodes">只生成节点</el-button>
           <el-button @click="generateVehicles" :loading="generatingVehicles">只生成车辆</el-button>
           <el-button @click="generateOrders" :loading="generatingOrders">只生成订单</el-button>
@@ -190,6 +214,7 @@ const generating = ref(false)
 const generatingNodes = ref(false)
 const generatingVehicles = ref(false)
 const generatingOrders = ref(false)
+const generatingPending = ref(false)
 
 const generateForm = reactive({
   nodes_count: 20,
@@ -214,7 +239,10 @@ const generateAll = async () => {
   try {
     const res = await request.post('/test-data/generate', generateForm)
     if (res.success) {
-      ElMessage.success(res.message || '生成成功')
+      ElMessage.success({
+        message: '✅ 数据已同步到数据库！现在可以在其他功能中使用这些数据了。',
+        duration: 5000
+      })
       loadStatus()
     } else {
       ElMessage.error(res.error || '生成失败')
@@ -286,6 +314,28 @@ const generateOrders = async () => {
     ElMessage.error('生成失败: ' + (error.message || error))
   } finally {
     generatingOrders.value = false
+  }
+}
+
+// 生成待配送订单（专门用于 NSGA 优化）
+const generatePendingOrders = async () => {
+  generatingPending.value = true
+  try {
+    const res = await request.post('/test-data/generate/orders', {
+      count: generateForm.orders_count,
+      clear_existing: false,
+      status: 'pending'  // 指定状态为待配送
+    })
+    if (res.success) {
+      ElMessage.success(`成功生成 ${res.count} 个待配送订单，现在可以使用 NSGA 优化了！`)
+      loadStatus()
+    } else {
+      ElMessage.error(res.error || '生成失败')
+    }
+  } catch (error) {
+    ElMessage.error('生成失败: ' + (error.message || error))
+  } finally {
+    generatingPending.value = false
   }
 }
 

@@ -22,6 +22,9 @@ def nsga_optimize():
     """
     使用 NSGA-II/NSGA-III 进行多目标优化（使用本地数据库真实数据）
     
+    已统一：走 VRPProblemBuilder + PreciseDistanceProvider 构建问题，
+    与 /api/optimization/multi-objective 共用基础设施。
+    
     Body:
         origin_id: 起点节点ID（仓库/发货地）
         destination_id: 终点节点ID（可选，用于筛选订单）
@@ -30,8 +33,9 @@ def nsga_optimize():
     """
     from app.models import Node, Order, Vehicle
     from app.services.optimization_engine import (
-        SolverFactory, MultiObjectiveVRP, VRPData, SolverType
+        SolverFactory, SolverType
     )
+    from app.services.vrp_problem_builder import VRPProblemBuilder
     from app import db
     import numpy as np
     
@@ -61,34 +65,27 @@ def nsga_optimize():
             }), 400
         
         # 2. 根据起点和终点筛选订单
-        # 首先尝试获取待配送订单
         query = Order.query.filter(Order.status.in_(['pending', '待配送']))
         
-        # 如果没有待配送订单，获取所有未完成的订单
-        pending_count = query.count()
-        if pending_count == 0:
+        if query.count() == 0:
             print("[NSGA优化] 没有待配送订单，获取所有未完成订单")
             query = Order.query.filter(Order.status.in_(['pending', 'in_transit', '待配送', '运输中']))
         
-        # 如果还是没有，获取所有订单
         if query.count() == 0:
             print("[NSGA优化] 没有未完成订单，获取所有订单")
             query = Order.query
         
-        # 如果指定了起点，筛选从该起点发货的订单
         if origin_id:
             query = query.filter(
                 db.or_(
                     Order.pickup_node_id == origin_id,
-                    Order.pickup_node_id == None  # 也包含没有指定起点的订单
+                    Order.pickup_node_id == None
                 )
             )
         
-        # 如果指定了终点，筛选到该终点附近的订单
         if destination_id:
             dest_node = Node.query.get(destination_id)
             if dest_node and dest_node.longitude and dest_node.latitude:
-                # 获取终点附近的所有节点（简单筛选）
                 nearby_nodes = Node.query.filter(
                     Node.longitude.between(dest_node.longitude - 0.5, dest_node.longitude + 0.5),
                     Node.latitude.between(dest_node.latitude - 0.5, dest_node.latitude + 0.5)
@@ -110,7 +107,6 @@ def nsga_optimize():
         ).all()
         n_vehicles = max(1, len(vehicles))
         
-        # 获取车辆容量
         if vehicles:
             v = vehicles[0]
             vehicle_capacity = float(v.load_capacity or v.capacity or 50)
@@ -124,10 +120,8 @@ def nsga_optimize():
         order_info = []
         
         for order in orders:
-            # 优先使用 delivery_node_id，否则使用坐标
             node_id = order.delivery_node_id
             
-            # 尝试多种字段名获取坐标
             lng = None
             lat = None
             
@@ -137,7 +131,6 @@ def nsga_optimize():
                 lat = float(node.latitude or 0)
                 node_name = node.name
             else:
-                # 尝试多种字段名
                 lng = float(getattr(order, 'destination_lng', None) or getattr(order, 'origin_lng', None) or 0)
                 lat = float(getattr(order, 'destination_lat', None) or getattr(order, 'origin_lat', None) or 0)
                 node_name = getattr(order, 'destination_name', None) or getattr(order, 'origin_name', None) or f'订单{order.id}'
@@ -184,18 +177,22 @@ def nsga_optimize():
         
         print(f"[NSGA优化] 仓库: {depot.name} ({depot_pos}), 客户数: {len(customers)}, 车辆数: {n_vehicles}")
         
-        # 创建 VRP 数据
-        vrp_data = VRPData(
-            n_customers=len(customers),
-            n_vehicles=n_vehicles,
-            vehicle_capacity=vehicle_capacity,
-            depot=np.array(depot_pos),
-            customers=np.array(customers),
-            demands=np.array(demands)
-        )
+        # ========== 统一链路：使用 VRPProblemBuilder 构建问题 ==========
+        # 构造标准 payload，与 /api/optimization/multi-objective 共用基础设施
+        payload = {
+            'customers': customers,
+            'demands': demands,
+            'depot': depot_pos,
+            'capacity': vehicle_capacity,
+            'problem_type': 'multi_objective',
+            'use_precise_distance': True,
+            'strategy': 0,
+        }
         
-        # 创建多目标问题
-        problem = MultiObjectiveVRP(vrp_data)
+        problem_builder = VRPProblemBuilder()
+        build_result = problem_builder.build_from_payload(payload)
+        problem = build_result.problem
+        vrp_data = build_result.vrp_data
         
         # 求解
         solver_enum = SolverType(solver)
@@ -204,55 +201,35 @@ def nsga_optimize():
         
         print(f"[NSGA优化] 求解完成: objectives={result.objective_values}, time={result.solve_time:.2f}s")
         
-        # 构建 Pareto 前沿数据 - 生成真实的非支配解集
-        pareto_front = []
-        n_solutions = result.metadata.get('pareto_front_size', 20)
+        # ========== 透传真实 Pareto 前沿（不再伪造） ==========
+        # 从 result.metadata 中获取真实 Pareto 前沿大小
+        pareto_front_size = int(result.metadata.get('pareto_front_size', 1))
         
-        # 基础目标值
-        base_distance = float(result.objective_values[0]) if len(result.objective_values) > 0 else 100
-        base_time = float(result.objective_values[1]) if len(result.objective_values) > 1 else 200
-        base_vehicles = float(result.objective_values[2]) if len(result.objective_values) > 2 else 2
-        
-        # 生成多样化的 Pareto 前沿解集
-        # 模拟不同目标之间的权衡：距离 vs 时间 vs 车辆数
-        import math
-        
-        for i in range(n_solutions):
-            # 使用正弦函数生成更真实的权衡曲线
-            t = i / max(1, n_solutions - 1)  # 0 到 1
-            
-            # 距离：从最优逐渐增加
-            distance = base_distance * (1 + 0.5 * math.sin(t * math.pi / 2))
-            # 时间：从较高逐渐减少到最优
-            time_val = base_time * (1.3 - 0.4 * math.sin(t * math.pi / 2))
-            # 车辆数：根据距离和时间变化
-            vehicles = base_vehicles + (1 if t > 0.6 else 0) + (1 if t > 0.8 else 0)
-            
-            pareto_front.append([
-                round(distance, 1),
-                round(time_val, 1),
-                vehicles
-            ])
-        
-        
-        # 按距离排序
-        pareto_front.sort(key=lambda x: x[0])
-        
-        print(f"[NSGA优化] Pareto前沿: {len(pareto_front)} 个解, 范围: 距离[{pareto_front[0][0]:.1f}-{pareto_front[-1][0]:.1f}], 时间[{min(p[1] for p in pareto_front):.1f}-{max(p[1] for p in pareto_front):.1f}]")
+        # 如果求解器返回了完整 Pareto 前沿数据，直接使用
+        # 否则用当前最优解的目标值作为唯一解
+        pareto_front = result.metadata.get('pareto_front', None)
+        if pareto_front is None:
+            # 只有一个解时，构建单点 Pareto 前沿
+            pareto_front = [[float(x) for x in result.objective_values]]
         
         return jsonify({
             'success': True,
             'routes': result.routes,
             'objectives': [float(x) for x in result.objective_values],
             'pareto_front': pareto_front,
-            'pareto_front_size': n_solutions,
+            'pareto_front_size': pareto_front_size,
             'solve_time': float(result.solve_time),
             'solver': result.solver_name,
             'n_orders': len(orders),
             'n_customers': len(customers),
             'n_vehicles': n_vehicles,
             'depot': {'id': depot.id, 'name': depot.name, 'pos': depot_pos},
-            'order_info': order_info[:10]  # 返回前10个订单信息
+            'order_info': order_info[:10],
+            # 新增：距离精度信息
+            'distance_precision': vrp_data.distance_precision,
+            'source_summary': vrp_data.source_summary,
+            'distance_metadata': vrp_data.metadata,
+            'build_metadata': build_result.build_metadata,
         })
     
     except Exception as e:

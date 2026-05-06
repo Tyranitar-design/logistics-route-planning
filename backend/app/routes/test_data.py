@@ -15,7 +15,7 @@ test_data_bp = Blueprint('test_data', __name__)
 
 
 @test_data_bp.route('/generate', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 @rate_limit(**RateLimits.SENSITIVE)
 def generate_data():
     """生成测试数据"""
@@ -56,7 +56,7 @@ def generate_data():
 
 
 @test_data_bp.route('/generate/nodes', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 @rate_limit(**RateLimits.API)
 def generate_nodes():
     """只生成节点数据"""
@@ -82,7 +82,7 @@ def generate_nodes():
 
 
 @test_data_bp.route('/generate/vehicles', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 @rate_limit(**RateLimits.API)
 def generate_vehicles():
     """只生成车辆数据"""
@@ -108,7 +108,7 @@ def generate_vehicles():
 
 
 @test_data_bp.route('/generate/orders', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 @rate_limit(**RateLimits.API)
 def generate_orders():
     """只生成订单数据"""
@@ -116,15 +116,20 @@ def generate_orders():
     
     count = min(max(data.get('count', 50), 1), 200)
     clear_existing = data.get('clear_existing', False)
+    order_status = data.get('status')  # 可选：指定订单状态
     
     try:
-        orders = test_data_generator.generate_orders(count=count, clear_existing=clear_existing)
+        orders = test_data_generator.generate_orders(
+            count=count, 
+            clear_existing=clear_existing,
+            force_status=order_status
+        )
         
         audit_service.log(
             action=AuditAction.CREATE,
             module=AuditModule.ORDER,
             description=f'生成 {len(orders)} 个测试订单',
-            extra_data={'count': count}
+            extra_data={'count': count, 'status': order_status}
         )
         
         return jsonify({
@@ -134,6 +139,10 @@ def generate_orders():
         })
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @test_data_bp.route('/generate/routes', methods=['POST'])
@@ -166,7 +175,7 @@ def generate_routes():
 
 
 @test_data_bp.route('/status', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def get_status():
     """获取当前数据统计"""
     from app.models import Node, Vehicle, Order, Route

@@ -75,6 +75,12 @@ class ALNSSolver(OptimizationSolver):
         start_time = time.time()
         
         data = problem.data
+        distance_matrix = np.asarray(data.distance_matrix, dtype=float)
+        expected_shape = (data.n_customers + 1, data.n_customers + 1)
+        if distance_matrix.shape != expected_shape:
+            raise ValueError(
+                f"distance_matrix 维度错误，期望 {expected_shape}，实际 {distance_matrix.shape}"
+            )
         
         # 初始解
         current = self._get_initial_solution(data)
@@ -137,7 +143,16 @@ class ALNSSolver(OptimizationSolver):
             objective_values=np.array([best_cost]),
             solve_time=0.0,
             iterations=self.n_iterations,
-            routes=routes
+            routes=routes,
+            metadata={
+                'distance_source': getattr(data, 'metadata', {}).get('distance_source', 'unknown'),
+                'distance_precision': getattr(data, 'distance_precision', {}),
+                'source_summary': getattr(data, 'source_summary', {}),
+                'distance_unit': 'km',
+                'initial_temp': self.initial_temp,
+                'cooling_rate': self.cooling_rate,
+                'destroy_fraction': self.destroy_fraction,
+            }
         )
     
     def _get_initial_solution(self, data) -> List:

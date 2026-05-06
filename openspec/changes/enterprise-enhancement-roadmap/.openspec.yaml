@@ -1,0 +1,10 @@
+schema: spec-driven
+created: 2026-05-06
+parent_spec: docs/superpowers/specs/2026-05-06-enterprise-enhancement-roadmap.md
+phases:
+  - B6-1-real-constraints
+  - B6-2-execution-loop
+  - B6-3-data-governance-and-audit
+  - B6-4-observability-and-stability
+  - B6-5-operations-views-and-reports
+  - B6-6-roles-and-permissions

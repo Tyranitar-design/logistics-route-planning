@@ -80,6 +80,12 @@ class GurobiSolver(OptimizationSolver):
         from gurobipy import GRB
         
         data = problem.data
+        distance_matrix = np.asarray(data.distance_matrix, dtype=float)
+        expected_shape = (data.n_customers + 1, data.n_customers + 1)
+        if distance_matrix.shape != expected_shape:
+            raise ValueError(
+                f"distance_matrix 维度错误，期望 {expected_shape}，实际 {distance_matrix.shape}"
+            )
         
         # 创建模型
         model = gp.Model("VRP_Gurobi")
@@ -94,7 +100,7 @@ class GurobiSolver(OptimizationSolver):
         V = n + 1  # 总节点数（含仓库）
         K = data.n_vehicles
         Q = data.vehicle_capacity
-        c = data.distance_matrix
+        c = distance_matrix
         # 需求转换为列表确保索引正确
         demands_list = [0] + [int(d) for d in data.demands]
         d = np.array(demands_list)  # 仓库需求为0
@@ -221,7 +227,13 @@ class GurobiSolver(OptimizationSolver):
             metadata={
                 'model_status': model.status,
                 'node_count': model.NodeCount,
-                'iteration_count': model.IterCount
+                'iteration_count': model.IterCount,
+                'distance_source': getattr(data, 'metadata', {}).get('distance_source', 'unknown'),
+                'distance_precision': getattr(data, 'distance_precision', {}),
+                'source_summary': getattr(data, 'source_summary', {}),
+                'distance_unit': 'km',
+                'mip_focus': self.mip_focus,
+                'heuristics': self.heuristics,
             }
         )
         

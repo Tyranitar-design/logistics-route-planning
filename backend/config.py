@@ -25,8 +25,15 @@ class Config:
     JWT_HEADER_TYPE = 'Bearer'
     
     # 数据库配置 - 默认使用 SQLite
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
-        'sqlite:///' + os.path.join(os.path.dirname(os.path.dirname(__file__)), 'database', 'logistics.db')
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+    os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
+    DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
+    # 将Windows路径转换为SQLite兼容的URL格式
+    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
+    import urllib.parse
+    ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or f'sqlite:///{ENCODED_PATH}'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
     
@@ -38,6 +45,10 @@ class Config:
     # 高德地图API配置
     AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '')
     AMAP_SERVICE_KEY = os.environ.get('AMAP_SERVICE_KEY', '')
+    
+    # 天地图API配置
+    TIANDITU_BROWSER_KEY = os.environ.get('TIANDITU_BROWSER_KEY', '18188f6432d582c3fb7bdb6f032c2ed2')
+    TIANDITU_SERVER_KEY = os.environ.get('TIANDITU_SERVER_KEY', 'e364fce5933a099cac671f394d392875')
 
 
 class DevelopmentConfig(Config):
@@ -55,8 +66,15 @@ class ProductionConfig(Config):
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'production-jwt-secret-please-change'
     
     # 生产环境优先使用环境变量，没有则使用 SQLite
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
-        'sqlite:///' + os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'logistics.db')
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+    os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
+    DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
+    # 将Windows路径转换为SQLite兼容的URL格式
+    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
+    import urllib.parse
+    ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or f'sqlite:///{ENCODED_PATH}'
 
 
 class DockerConfig(Config):

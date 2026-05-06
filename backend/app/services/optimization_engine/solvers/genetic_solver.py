@@ -76,6 +76,12 @@ class GeneticSolver(OptimizationSolver):
         start_time = time.time()
         
         data = problem.data
+        distance_matrix = np.asarray(data.distance_matrix, dtype=float)
+        expected_shape = (data.n_customers + 1, data.n_customers + 1)
+        if distance_matrix.shape != expected_shape:
+            raise ValueError(
+                f"distance_matrix 维度错误，期望 {expected_shape}，实际 {distance_matrix.shape}"
+            )
         n = data.n_customers
         
         # 初始化种群
@@ -137,7 +143,15 @@ class GeneticSolver(OptimizationSolver):
             objective_values=np.array([best_fitness]),
             solve_time=0.0,
             iterations=n_gen,
-            routes=best_routes
+            routes=best_routes,
+            metadata={
+                'distance_source': getattr(data, 'metadata', {}).get('distance_source', 'unknown'),
+                'distance_precision': getattr(data, 'distance_precision', {}),
+                'source_summary': getattr(data, 'source_summary', {}),
+                'distance_unit': 'km',
+                'population_size': self.pop_size,
+                'elite_size': self.elite_size,
+            }
         )
         
         return result

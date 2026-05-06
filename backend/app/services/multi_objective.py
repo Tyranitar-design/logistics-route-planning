@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 from flask import current_app
 
+from app.services.optimization_engine.metrics import compute_pareto_metrics
+
 
 @dataclass
 class OptimizationResult:
@@ -48,7 +50,13 @@ class ObjectiveConfig:
 
 
 class MultiObjectiveOptimizer:
-    """多目标路径优化器"""
+    """多目标路径优化器
+    
+    v2.0 升级：
+    - 目标值支持使用精确距离（高德缓存）
+    - 保留 Haversine × 1.3 作为兜底
+    - 结果中标注距离来源和精确度
+    """
     
     # 预定义的优化目标
     OBJECTIVES = {
@@ -105,7 +113,8 @@ class MultiObjectiveOptimizer:
     def optimize_weighted_sum(
         self,
         routes: List[Dict],
-        weights: Dict[str, float] = None
+        weights: Dict[str, float] = None,
+        use_precise_distance: bool = False
     ) -> OptimizationResult:
         """
         加权求和法
@@ -115,12 +124,17 @@ class MultiObjectiveOptimizer:
         Args:
             routes: 候选路线列表，每个路线包含各目标值
             weights: 各目标的权重，归一化后使用
+            use_precise_distance: 是否使用精确距离（高德缓存）
         
         Returns:
             最优路线结果
         """
         if not routes:
             return OptimizationResult(success=False, algorithm='weighted_sum')
+        
+        # 如果使用精确距离，先更新路线的距离值
+        if use_precise_distance:
+            routes = self._enrich_routes_with_precise_distance(routes)
         
         # 默认权重
         if weights is None:
@@ -169,7 +183,8 @@ class MultiObjectiveOptimizer:
     
     def find_pareto_front(
         self,
-        routes: List[Dict]
+        routes: List[Dict],
+        use_precise_distance: bool = False
     ) -> List[OptimizationResult]:
         """
         寻找 Pareto 最优解集
@@ -178,12 +193,17 @@ class MultiObjectiveOptimizer:
         
         Args:
             routes: 候选路线列表
+            use_precise_distance: 是否使用精确距离
         
         Returns:
             Pareto 最优解列表
         """
         if not routes:
             return []
+        
+        # 如果使用精确距离，先更新路线的距离值
+        if use_precise_distance:
+            routes = self._enrich_routes_with_precise_distance(routes)
         
         # 转换为结果对象
         results = []
@@ -373,24 +393,43 @@ class MultiObjectiveOptimizer:
     def generate_recommendations(
         self,
         routes: List[Dict],
-        weights: Dict[str, float] = None
+        weights: Dict[str, float] = None,
+        use_precise_distance: bool = False
     ) -> Dict:
         """
         生成推荐结果
         
         同时返回加权求和的最优解和 Pareto 最优解集
+        
+        Args:
+            routes: 候选路线列表
+            weights: 各目标权重
+            use_precise_distance: 是否使用精确距离（高德缓存）
         """
+        if not routes:
+            return {
+                'success': False,
+                'recommendations': [],
+                'pareto_count': 0,
+                'total_routes': 0,
+                'weights_used': weights or {k: v.default_weight for k, v in self.OBJECTIVES.items()},
+                'distance_precision': 'amap_cache' if use_precise_distance else 'haversine_corrected'
+            }
+
+        working_routes = self._enrich_routes_with_precise_distance(routes) if use_precise_distance else routes
+
         # 归一化处理
-        normalized = self._normalize_objectives(routes)
+        normalized = self._normalize_objectives(working_routes)
         
         # 加权求和最优解
-        weighted_best = self.optimize_weighted_sum(routes, weights)
+        weighted_best = self.optimize_weighted_sum(working_routes, weights, use_precise_distance=False)
         
         # Pareto 最优解集
-        pareto_front = self.find_pareto_front(routes)
+        pareto_front = self.find_pareto_front(working_routes, use_precise_distance=False)
         
         # 生成推荐报告
         recommendations = []
+        single_objective_bests = {}
         
         # 1. 加权最优解
         if weighted_best.success:
@@ -429,33 +468,113 @@ class MultiObjectiveOptimizer:
         
         # 3. 单目标最优解（每个目标的最优）
         for obj_name, config in self.OBJECTIVES.items():
-            if routes:
-                sorted_routes = sorted(
-                    routes,
-                    key=lambda x: x.get('objectives', {}).get(obj_name, x.get(obj_name, float('inf')))
-                )
-                if config.minimize:
-                    best = sorted_routes[0]
-                else:
-                    best = sorted_routes[-1]
-                
-                recommendations.append({
-                    'type': 'single_objective',
-                    'title': f'{config.display_name}最优',
-                    'objective': obj_name,
-                    'description': f'{config.display_name}最小' if config.minimize else f'{config.display_name}最大',
-                    'path': best.get('path', []),
-                    'objectives': best.get('objectives', {}),
-                    'best_value': best.get('objectives', {}).get(obj_name, best.get(obj_name))
-                })
+            sorted_routes = sorted(
+                working_routes,
+                key=lambda x: x.get('objectives', {}).get(obj_name, x.get(obj_name, float('inf')))
+            )
+            if not sorted_routes:
+                continue
+            if config.minimize:
+                best = sorted_routes[0]
+            else:
+                best = sorted_routes[-1]
+
+            best_value = best.get('objectives', {}).get(obj_name, best.get(obj_name))
+            single_objective_bests[obj_name] = {
+                'title': f'{config.display_name}最优',
+                'best_value': best_value,
+                'unit': config.unit,
+                'minimize': config.minimize,
+            }
+            
+            recommendations.append({
+                'type': 'single_objective',
+                'title': f'{config.display_name}最优',
+                'objective': obj_name,
+                'description': f'{config.display_name}最小' if config.minimize else f'{config.display_name}最大',
+                'path': best.get('path', []),
+                'objectives': best.get('objectives', {}),
+                'best_value': best_value
+            })
+
+        pareto_objectives = [list(item.objectives.values()) for item in pareto_front if item.objectives]
+        pareto_metrics = compute_pareto_metrics(pareto_objectives) if pareto_objectives else {
+            'pareto_count': 0,
+            'n_objectives': 0,
+            'status': 'empty_front'
+        }
+
+        pareto_summary = {
+            'pareto_count': len(pareto_front),
+            'representative_count': min(len(pareto_front), 5),
+            'metrics': pareto_metrics,
+            'front_available': len(pareto_front) > 0,
+        }
         
         return {
             'success': True,
             'recommendations': recommendations,
             'pareto_count': len(pareto_front),
-            'total_routes': len(routes),
-            'weights_used': weights or {k: v.default_weight for k, v in self.OBJECTIVES.items()}
+            'total_routes': len(working_routes),
+            'weights_used': weights or {k: v.default_weight for k, v in self.OBJECTIVES.items()},
+            'distance_precision': 'amap_cache' if use_precise_distance else 'haversine_corrected',
+            'pareto_summary': pareto_summary,
+            'single_objective_bests': single_objective_bests,
+            'normalized_route_count': len(normalized),
         }
+    
+    def _enrich_routes_with_precise_distance(self, routes: List[Dict]) -> List[Dict]:
+        """
+        用精确距离（高德缓存）更新路线的距离和时间目标值
+        
+        对于每条路线中的每个路段，尝试从缓存获取精确距离。
+        如果缓存不可用，保留原始值（已经是 Haversine × 1.3）。
+        """
+        try:
+            from app.services.distance_cache_service import get_distance_cache
+            cache = get_distance_cache()
+        except Exception:
+            return routes
+        
+        enriched = []
+        for route in routes:
+            new_route = route.copy()
+            
+            # 如果路线有 path 信息，可以逐段获取精确距离
+            path = route.get('path', [])
+            if path and len(path) >= 2:
+                total_distance_km = 0.0
+                total_duration_min = 0.0
+                
+                for i in range(len(path) - 1):
+                    node1 = path[i]
+                    node2 = path[i + 1]
+                    
+                    lng1 = node1.get('longitude') or node1.get('lng', 0)
+                    lat1 = node1.get('latitude') or node1.get('lat', 0)
+                    lng2 = node2.get('longitude') or node2.get('lng', 0)
+                    lat2 = node2.get('latitude') or node2.get('lat', 0)
+                    
+                    if lng1 and lat1 and lng2 and lat2:
+                        result = cache.get_distance(
+                            (float(lng1), float(lat1)),
+                            (float(lng2), float(lat2))
+                        )
+                        total_distance_km += result['distance_km']
+                        total_duration_min += result['duration_minutes']
+                
+                # 更新目标值
+                if 'objectives' not in new_route:
+                    new_route['objectives'] = {}
+                new_route['objectives']['distance'] = round(total_distance_km, 2)
+                new_route['objectives']['time'] = round(total_duration_min, 2)
+                
+                # 根据距离估算成本（0.8 元/公里）
+                new_route['objectives']['cost'] = round(total_distance_km * 0.8, 2)
+            
+            enriched.append(new_route)
+        
+        return enriched
     
     def _generate_description(self, result: OptimizationResult) -> str:
         """生成方案描述"""

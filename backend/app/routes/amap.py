@@ -430,41 +430,41 @@ def distance_matrix():
 def compare_routes():
     """
     对比本地算法和高德地图的路线规划
-    
+
     Body:
         origin_id: 起点节点ID
         destination_id: 终点节点ID
     """
     try:
         data = request.get_json()
-        
+
         origin_id = data.get('origin_id')
         destination_id = data.get('destination_id')
-        
+
         if not origin_id or not destination_id:
             return jsonify({'success': False, 'error': '请提供起点和终点节点ID'}), 400
-        
+
         # 获取节点信息
         origin_node = Node.query.get_or_404(origin_id)
         dest_node = Node.query.get_or_404(destination_id)
-        
+
         if not origin_node.longitude or not origin_node.latitude:
             return jsonify({'success': False, 'error': '起点节点缺少坐标信息'}), 400
         if not dest_node.longitude or not dest_node.latitude:
             return jsonify({'success': False, 'error': '终点节点缺少坐标信息'}), 400
-        
+
         # 高德地图路线规划
         service = get_amap_service()
         amap_result = service.multi_route(
             (origin_node.longitude, origin_node.latitude),
             (dest_node.longitude, dest_node.latitude)
         )
-        
+
         # 本地算法路线规划
         from app.services.path_algorithm import get_path_service
         path_service = get_path_service()
         local_result = path_service.dijkstra(origin_id, destination_id, 'distance')
-        
+
         # 整合结果
         comparison = {
             'success': True,
@@ -481,11 +481,133 @@ def compare_routes():
                 'computation_time': local_result.computation_time
             } if local_result.success else None
         }
-        
+
         return jsonify(comparison)
-    
+
     except Exception as e:
         logger.error(f"路线对比失败: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@amap_bp.route('/distance/validate', methods=['POST'])
+@jwt_required()
+def validate_real_distance():
+    """
+    真实距离验证接口（B1-1）
+
+    用于验证两点之间是否已经能够：
+    1. 读取 SQLite 缓存
+    2. 调用高德距离 API
+    3. 回退到 Haversine × 1.3
+
+    Body:
+        origin_id: 起点节点ID（可选）
+        destination_id: 终点节点ID（可选）
+        origin: 起点坐标 {longitude, latitude}（可选）
+        destination: 终点坐标 {longitude, latitude}（可选）
+        strategy: 高德路线策略（默认0）
+        use_amap: 是否调用高德（默认true）
+    """
+    try:
+        data = request.get_json() or {}
+        strategy = data.get('strategy', 0)
+        use_amap = data.get('use_amap', True)
+
+        def get_coordinates(point=None, point_id=None):
+            if point_id:
+                node = Node.query.get(point_id)
+                if node and node.longitude and node.latitude:
+                    return (
+                        float(node.longitude),
+                        float(node.latitude)
+                    ), node
+                return None, None
+            if isinstance(point, dict):
+                lng = point.get('longitude')
+                lat = point.get('latitude')
+                if lng is not None and lat is not None:
+                    return (float(lng), float(lat)), None
+            return None, None
+
+        origin_id = data.get('origin_id')
+        destination_id = data.get('destination_id')
+        origin, origin_node = get_coordinates(data.get('origin'), origin_id)
+        destination, destination_node = get_coordinates(data.get('destination'), destination_id)
+
+        if not origin or not destination:
+            return jsonify({
+                'success': False,
+                'error': '请提供 origin_id/destination_id 或 origin/destination 坐标'
+            }), 400
+
+        from app.services.distance_cache_service import get_distance_cache
+        cache = get_distance_cache()
+
+        # 调用前先看缓存是否已命中
+        cached_before = cache.get_cached(origin, destination, strategy)
+        result = cache.get_distance(origin, destination, strategy=strategy, use_amap=use_amap)
+        cached_after = cache.get_cached(origin, destination, strategy)
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'origin': {
+                    'node_id': origin_id,
+                    'node_name': getattr(origin_node, 'name', None),
+                    'longitude': origin[0],
+                    'latitude': origin[1]
+                },
+                'destination': {
+                    'node_id': destination_id,
+                    'node_name': getattr(destination_node, 'name', None),
+                    'longitude': destination[0],
+                    'latitude': destination[1]
+                },
+                'strategy': strategy,
+                'use_amap': use_amap,
+                'distance': {
+                    'distance_m': result['distance_m'],
+                    'distance_km': result['distance_km'],
+                    'duration_s': result['duration_s'],
+                    'duration_minutes': result['duration_minutes'],
+                    'source': result['source'],
+                    'is_exact': result['is_exact'],
+                    'correction_factor': result['correction_factor']
+                },
+                'cache': {
+                    'hit_before_call': cached_before is not None,
+                    'exists_after_call': cached_after is not None,
+                    'cached_source': getattr(cached_after, 'source', None)
+                },
+                'integration_status': {
+                    'amap_integrated': use_amap,
+                    'real_distance_enabled': result['source'] in ['amap', 'cache'],
+                    'fallback_enabled': result['source'] == 'haversine_corrected'
+                }
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"真实距离验证失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@amap_bp.route('/distance/cache/stats', methods=['GET'])
+@jwt_required()
+def distance_cache_stats():
+    """查看真实距离缓存统计"""
+    try:
+        from app.services.distance_cache_service import get_distance_cache
+        cache = get_distance_cache()
+        return jsonify({
+            'success': True,
+            'data': cache.get_stats()
+        })
+    except Exception as e:
+        logger.error(f"距离缓存统计失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+

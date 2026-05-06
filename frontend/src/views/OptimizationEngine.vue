@@ -255,6 +255,11 @@
                 </el-col>
               </el-row>
               
+              <!-- 距离精度信息 -->
+              <div v-if="moResult.distance_precision" style="margin-top: 12px; font-size: 12px; color: #909399;">
+                📍 {{ moResult.source_summary || '距离数据已加载' }}
+              </div>
+              
               <el-divider />
               
               <h4>📋 推荐路线</h4>

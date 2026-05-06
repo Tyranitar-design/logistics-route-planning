@@ -136,6 +136,33 @@
         </el-col>
       </el-row>
 
+      <!-- 推荐与质量补充信息 -->
+      <el-row :gutter="20" class="insight-row">
+        <el-col :span="12">
+          <SolverRecommendationCard
+            v-if="scenarioRecommendation"
+            :recommendation="scenarioRecommendation"
+          />
+        </el-col>
+        <el-col :span="12">
+          <QualityReportPanel
+            v-if="scenarioQualityReport"
+            :report="scenarioQualityReport"
+          />
+        </el-col>
+      </el-row>
+
+      <el-row :gutter="20" class="insight-row">
+        <el-col :span="24">
+          <DistancePrecisionCard
+            v-if="scenarioDistancePrecision"
+            :distance-precision="scenarioDistancePrecision"
+            :source-summary="scenarioSourceSummary"
+            :distance-metadata="scenarioDistanceMetadata"
+          />
+        </el-col>
+      </el-row>
+
       <!-- 推荐结论 -->
       <el-card class="conclusion-card">
         <template #header>
@@ -161,6 +188,9 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import SolverRecommendationCard from '../components/SolverRecommendationCard.vue'
+import QualityReportPanel from '../components/QualityReportPanel.vue'
+import DistancePrecisionCard from '../components/DistancePrecisionCard.vue'
 
 const router = useRouter()
 
@@ -282,6 +312,95 @@ const recommendation = computed(() => {
     }
   }
 })
+
+const scenarioRecommendation = computed(() => {
+  if (!dataA.value || !dataB.value) return null
+
+  const recommended = recommendation.value?.title?.includes('A') ? dataA.value : dataB.value
+  const alternative = recommended === dataA.value ? dataB.value : dataA.value
+
+  return {
+    recommended_solver: recommended?.algorithm || recommended?.name || 'scenario_a',
+    alternatives: [alternative?.algorithm || alternative?.name || 'scenario_b'],
+    reasoning: [
+      recommendation.value?.title || '场景对比推荐',
+      recommendation.value?.description || '基于场景关键指标比较得出'
+    ],
+    problem_summary: {
+      problem_type: 'scenario_compare',
+      n_customers: Math.max(dataA.value?.customer_count || 0, dataB.value?.customer_count || 0),
+      scale: 'compare',
+      require_high_accuracy: false,
+      prefer_fast_response: false,
+      realtime: false
+    }
+  }
+})
+
+const scenarioQualityReport = computed(() => {
+  if (!dataA.value || !dataB.value) return null
+  const selected = recommendation.value?.title?.includes('A') ? dataA.value : dataB.value
+
+  return {
+    feasible: true,
+    violations: [],
+    objective_summary: {
+      primary_objective: selected?.total_cost || 0,
+      objective_values: [
+        selected?.total_cost || 0,
+        selected?.total_distance || 0,
+        (selected?.service_level || 0) * 100
+      ],
+      n_objectives: 3,
+      gap: null
+    },
+    solver_summary: {
+      solver_name: selected?.algorithm || selected?.name || 'scenario',
+      problem_type: 'scenario_compare',
+      solve_time: selected?.solve_time || 0,
+      iterations: selected?.iterations || 0,
+      is_optimal: false,
+      metadata: {}
+    },
+    distance_precision_summary: {
+      distance_source: 'scenario_summary',
+      exact_count: 0,
+      approx_count: 0,
+      total_count: 0,
+      exact_ratio: 0,
+      approx_ratio: 0,
+      source_summary: {}
+    },
+    pareto_summary: {
+      enabled: false,
+      reason: 'not_multi_objective_page'
+    }
+  }
+})
+
+const scenarioDistancePrecision = computed(() => ({
+  exact_count: 0,
+  approx_count: 0,
+  total_count: 0,
+  exact_ratio: 0,
+  approx_ratio: 0
+}))
+
+const scenarioSourceSummary = computed(() => ({}))
+
+const scenarioDistanceMetadata = computed(() => ({
+  distance_source: 'scenario_summary',
+  distance_provider: 'N/A',
+  use_precise_distance: false,
+  strategy: '-',
+  cache_stats: {
+    cache_hits: 0,
+    amap_calls: 0,
+    haversine_fallbacks: 0,
+    total_pairs: 0
+  }
+}))
+
 
 function calculateScore(data) {
   const costScore = Math.max(0, 100 - (data.total_cost || 0) / 10000)
@@ -548,6 +667,10 @@ onMounted(() => {
 }
 
 .table-row {
+  margin-bottom: 20px;
+}
+
+.insight-row {
   margin-bottom: 20px;
 }
 
