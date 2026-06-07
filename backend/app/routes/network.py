@@ -38,6 +38,20 @@ network_bp = Blueprint('network', __name__)
 # 辅助函数
 # ============================================================
 
+def _build_network_truth_contract(
+    path_source,
+    distance_source="haversine",
+    authenticity_level="C",
+    fallback_reason="network_design_uses_coordinate_distance_not_navigation_path",
+):
+    return {
+        "distance_source": distance_source,
+        "path_source": path_source,
+        "authenticity_level": authenticity_level,
+        "fallback_reason": fallback_reason,
+    }
+
+
 def haversine_distance(lat1, lon1, lat2, lon2):
     """
     计算两点之间的球面距离（公里）
@@ -220,6 +234,7 @@ def solve_p_median():
     transport_cost = total_distance * 2.0  # 假设每公里2元
     total_cost = total_fixed_cost + transport_cost
     
+    truth_contract = _build_network_truth_contract(path_source="facility_assignment")
     return jsonify({
         'status': 'success',
         'selected_facilities': selected_facilities,
@@ -229,7 +244,8 @@ def solve_p_median():
         'total_fixed_cost': total_fixed_cost,
         'transport_cost': round(transport_cost, 2),
         'solve_time': round(solve_time, 3),
-        'solver': solver_name
+        'solver': solver_name,
+        **truth_contract
     })
 
 
@@ -315,12 +331,14 @@ def solve_set_covering():
             'covered_customers': [customers[i]['name'] for i in coverage[j]]
         }
     
+    truth_contract = _build_network_truth_contract(path_source="coverage_assignment")
     return jsonify({
         'status': 'success',
         'num_facilities': len(selected_facilities),
         'selected_facilities': selected_facilities,
         'coverage_details': coverage_details,
-        'solve_time': round(solve_time, 3)
+        'solve_time': round(solve_time, 3),
+        **truth_contract
     })
 
 
@@ -431,6 +449,7 @@ def solve_cflp():
     fixed_cost = sum(candidates[j - n_customers]['fixed_cost'] for j in selected_indices)
     transport_cost = total_cost - fixed_cost
     
+    truth_contract = _build_network_truth_contract(path_source="facility_flow_assignment")
     return jsonify({
         'status': 'success',
         'selected_facilities': selected_facilities,
@@ -438,7 +457,8 @@ def solve_cflp():
         'total_cost': round(total_cost, 2),
         'fixed_cost': round(fixed_cost, 2),
         'transport_cost': round(transport_cost, 2),
-        'solve_time': round(solve_time, 3)
+        'solve_time': round(solve_time, 3),
+        **truth_contract
     })
 
 
@@ -595,6 +615,7 @@ def solve_multi_objective():
     # 计算服务水平（50km 内）
     service_level = sum(1 for d in service_distances if d <= 50) / len(service_distances) if service_distances else 0
     
+    truth_contract = _build_network_truth_contract(path_source="facility_assignment_weighted")
     return jsonify({
         'status': 'success',
         'selected_facilities': selected_facilities,
@@ -610,7 +631,8 @@ def solve_multi_objective():
         'transport_cost': round(transport_cost, 2),
         'weights_used': weights,
         'solve_time': round(solve_time, 3),
-        'solver': solver_name
+        'solver': solver_name,
+        **truth_contract
     })
 
 
@@ -772,12 +794,14 @@ def solve_dynamic_location():
     
     total_cost = value(prob.objective)
     
+    truth_contract = _build_network_truth_contract(path_source="dynamic_facility_plan")
     return jsonify({
         'status': 'success',
         'results_by_period': results_by_period,
         'total_cost': round(total_cost, 2),
         'expansion_periods': n_periods,
-        'solve_time': round(solve_time, 3)
+        'solve_time': round(solve_time, 3),
+        **truth_contract
     })
 
 
@@ -878,12 +902,19 @@ def generate_test_data():
             'fixed_cost': fixed_cost
         })
     
+    truth_contract = _build_network_truth_contract(
+        path_source="synthetic_sampling",
+        distance_source="synthetic_generator",
+        authenticity_level="D",
+        fallback_reason="generated_test_data",
+    )
     return jsonify({
         'status': 'success',
         'customers': customers,
         'candidates': candidates,
         'region': region,
-        'generated_at': datetime.now().isoformat()
+        'generated_at': datetime.now().isoformat(),
+        **truth_contract
     })
 
 
@@ -900,10 +931,15 @@ def list_scenarios():
         
         scenarios = NetworkScenario.query.filter_by(created_by=user_id).order_by(NetworkScenario.created_at.desc()).all()
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_index",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
             'scenarios': [s.to_dict() for s in scenarios],
-            'total': len(scenarios)
+            'total': len(scenarios),
+            **truth_contract
         })
     except Exception as e:
         return jsonify({
@@ -966,11 +1002,16 @@ def save_scenario():
         db.session.add(scenario)
         db.session.commit()
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_create",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
             'message': '场景保存成功',
             'scenario_id': scenario.id,
-            'scenario': scenario.to_dict()
+            'scenario': scenario.to_dict(),
+            **truth_contract
         })
     except Exception as e:
         db.session.rollback()
@@ -993,9 +1034,14 @@ def get_scenario(scenario_id):
                 'message': '场景不存在'
             }), 404
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_snapshot",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
-            'scenario': scenario.to_dict()
+            'scenario': scenario.to_dict(),
+            **truth_contract
         })
     except Exception as e:
         return jsonify({
@@ -1032,10 +1078,15 @@ def update_scenario(scenario_id):
         
         db.session.commit()
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_update",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
             'message': '场景更新成功',
-            'scenario': scenario.to_dict()
+            'scenario': scenario.to_dict(),
+            **truth_contract
         })
     except Exception as e:
         db.session.rollback()
@@ -1061,9 +1112,14 @@ def delete_scenario(scenario_id):
         db.session.delete(scenario)
         db.session.commit()
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_delete",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
-            'message': '场景已删除'
+            'message': '场景已删除',
+            **truth_contract
         })
     except Exception as e:
         db.session.rollback()
@@ -1099,9 +1155,14 @@ def compare_scenarios(scenario_id, other_id):
             }
         }
         
+        truth_contract = _build_network_truth_contract(
+            path_source="scenario_comparison",
+            distance_source="derived_from_scenario",
+        )
         return jsonify({
             'status': 'success',
-            'comparison': comparison
+            'comparison': comparison,
+            **truth_contract
         })
     except Exception as e:
         return jsonify({
@@ -1166,6 +1227,10 @@ def get_visualization_data():
                 'value': cust['demand']
             })
     
+    truth_contract = _build_network_truth_contract(
+        path_source="visualization_projection",
+        distance_source="derived_from_input",
+    )
     return jsonify({
         'nodes': nodes,
         'links': links,
@@ -1173,7 +1238,8 @@ def get_visualization_data():
             {'name': '客户'},
             {'name': '已选设施'},
             {'name': '未选设施'}
-        ]
+        ],
+        **truth_contract
     })
 
 
@@ -1199,7 +1265,7 @@ def import_nodes_from_existing():
         from app.models.node import Node
         
         data = request.json
-        customer_types = data.get('customer_types', ['customer'])
+        customer_types = data.get('customer_types', ['customer', 'station'])
         candidate_types = data.get('candidate_types', ['warehouse', 'distribution'])
         default_fixed_cost = data.get('default_fixed_cost', 100000)
         default_capacity = data.get('default_capacity', 500)
@@ -1231,13 +1297,19 @@ def import_nodes_from_existing():
                     'city': node.city
                 })
         
+        truth_contract = _build_network_truth_contract(
+            path_source="node_import_dataset",
+            distance_source="derived_from_input",
+            fallback_reason="imported_nodes_are_coordinate_dataset_not_navigation_path",
+        )
         return jsonify({
             'status': 'success',
             'customers': customers,
             'candidates': candidates,
             'total_customers': len(customers),
             'total_candidates': len(candidates),
-            'imported_from': 'existing_nodes'
+            'imported_from': 'existing_nodes',
+            **truth_contract
         })
     except Exception as e:
         return jsonify({

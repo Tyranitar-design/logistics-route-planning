@@ -5,14 +5,98 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from pydantic import ValidationError
 from datetime import datetime
+from math import ceil
 
 from app.models import db, Order, User, Node
+from app.models.layered_data import ShipmentFact
 from app.schemas import OrderCreate, OrderUpdate, OrderResponse
 from app.services.order_route_service import get_order_route_service
 from app.services.kafka_service import send_order_event
 from app.utils.rate_limiter import rate_limit, RateLimits
 
 orders_bp = Blueprint('orders', __name__)
+
+
+def _serialize_shipment_fact_as_order(fact: ShipmentFact) -> dict:
+    status = fact.standard_status or 'assigned'
+    timestamp = fact.shipped_at or fact.created_at
+    completed_at = fact.signed_at or fact.delivered_at
+
+    return {
+        'id': fact.id,
+        'data_source': 'shipment_fact',
+        'external_shipment_id': fact.external_shipment_id,
+        'external_order_id': fact.external_order_id,
+        'order_number': fact.external_order_id or fact.external_shipment_id,
+        'customer_name': fact.customer_name_masked,
+        'customer_phone': fact.customer_phone_masked,
+        'origin_name': fact.origin_city_std or fact.origin_city_raw,
+        'origin_address': fact.origin_city_raw,
+        'destination_name': fact.destination_city_std or fact.destination_city_raw,
+        'destination_address': fact.destination_city_raw,
+        'sender_name': fact.courier_name_masked,
+        'sender_phone': fact.courier_phone_masked,
+        'receiver_name': fact.customer_name_masked,
+        'receiver_phone': fact.customer_phone_masked,
+        'cargo_name': fact.cargo_type or '货物',
+        'goods_name': fact.cargo_type or '货物',
+        'cargo_type': fact.cargo_type,
+        'weight': fact.weight_kg,
+        'volume': fact.volume_m3,
+        'priority': 'normal',
+        'status': status,
+        'driver_id': None,
+        'vehicle_id': None,
+        'freight': fact.freight,
+        'estimated_cost': fact.freight,
+        'distance': None,
+        'estimated_duration': None,
+        'pickup_node_id': None,
+        'delivery_node_id': None,
+        'pickup_node': None,
+        'delivery_node': None,
+        'notes': fact.exception_reason,
+        'created_at': timestamp.isoformat() if timestamp else None,
+        'accepted_at': fact.shipped_at.isoformat() if fact.shipped_at else None,
+        'pickup_at': None,
+        'completed_at': completed_at.isoformat() if completed_at else None,
+    }
+
+
+def _get_shipment_fact_order_query(status: str | None = None, search: str | None = None):
+    query = ShipmentFact.query
+
+    if status:
+        mapped_status = 'assigned' if status == 'pending' else status
+        query = query.filter(ShipmentFact.standard_status == mapped_status)
+
+    if search:
+        pattern = f'%{search}%'
+        query = query.filter(
+            (ShipmentFact.external_order_id.ilike(pattern)) |
+            (ShipmentFact.external_shipment_id.ilike(pattern)) |
+            (ShipmentFact.customer_name_masked.ilike(pattern))
+        )
+
+    return query
+
+
+def _paginate_shipment_fact_orders(page: int, per_page: int, status: str | None, search: str | None):
+    query = _get_shipment_fact_order_query(status=status, search=search)
+    total = query.count()
+    items = (
+        query.order_by(ShipmentFact.shipped_at.desc().nullslast(), ShipmentFact.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    return {
+        'orders': [_serialize_shipment_fact_as_order(item) for item in items],
+        'total': total,
+        'pages': ceil(total / per_page) if total else 0,
+        'current_page': page,
+        'data_source': 'shipment_fact',
+    }
 
 @orders_bp.route('', methods=['GET'])
 @orders_bp.route('/', methods=['GET'])
@@ -39,6 +123,14 @@ def get_orders():
             (Order.order_number.ilike(f'%{search}%')) |
             (Order.customer_name.ilike(f'%{search}%'))
         )
+
+    if Order.query.count() == 0 and ShipmentFact.query.count() > 0:
+        return jsonify(_paginate_shipment_fact_orders(
+            page=page,
+            per_page=per_page,
+            status=status,
+            search=search,
+        ))
     
     # 分页
     pagination = query.order_by(Order.created_at.desc()).paginate(
@@ -123,6 +215,9 @@ def get_order(order_id):
     order = Order.query.get(order_id)
     
     if not order:
+        fact = ShipmentFact.query.get(order_id)
+        if fact:
+            return jsonify({'order': _serialize_shipment_fact_as_order(fact)})
         return jsonify({'error': '订单不存在'}), 404
     
     return jsonify({'order': order.to_dict()})

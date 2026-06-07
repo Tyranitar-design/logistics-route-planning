@@ -7,12 +7,13 @@ import requests
 import json
 import time
 import sqlite3
+import os
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 from app.database import get_db_path
 
 # ==================== 数据源配置 ====================
-TIANAPI_KEY = "e2c7bbdbce2502c8460aa05ad0d57fe1"
+TIANAPI_KEY = os.environ.get("TIANAPI_KEY", "")
 TIANAPI_BASE = "https://apis.tianapi.com/oilprice/index"
 
 # 2025年发改委标准参考油价（元/升）- 备用/初始化数据

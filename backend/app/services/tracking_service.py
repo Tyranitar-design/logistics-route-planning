@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from app.models import db
 from app.models import Vehicle, Order, Node
+from app.models.layered_data import ShipmentFact
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,46 @@ class TrackingService:
     def __init__(self):
         # 车辆当前状态缓存
         self._vehicle_states = {}
+
+    def _find_shipment_fact_order(self, order_id: int):
+        return ShipmentFact.query.filter(
+            db.or_(
+                ShipmentFact.id == order_id,
+                ShipmentFact.external_order_id == str(order_id),
+                ShipmentFact.external_shipment_id == str(order_id),
+            )
+        ).first()
+
+    def _find_node_by_city(self, city_name: str):
+        if not city_name:
+            return None
+
+        candidates = [
+            city_name,
+            city_name.replace('特别行政区', ''),
+            city_name.replace('市', ''),
+            city_name.replace('县', ''),
+        ]
+
+        seen = set()
+        normalized_candidates = []
+        for candidate in candidates:
+            candidate = (candidate or '').strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                normalized_candidates.append(candidate)
+
+        for candidate in normalized_candidates:
+            node = Node.query.filter(
+                db.or_(
+                    Node.city == candidate,
+                    Node.name.contains(candidate),
+                    Node.address.contains(candidate)
+                )
+            ).first()
+            if node:
+                return node
+        return None
         
     def update_vehicle_location(
         self, 
@@ -289,15 +330,84 @@ class TrackingService:
         """
         try:
             order = Order.query.get(order_id)
+            shipment_fact = None
             if not order:
-                return {'success': False, 'error': '订单不存在'}
-            
-            if not order.pickup_node_id or not order.delivery_node_id:
+                shipment_fact = self._find_shipment_fact_order(order_id)
+                if not shipment_fact:
+                    return {'success': False, 'error': '订单不存在'}
+
+            if not order or not order.pickup_node_id or not order.delivery_node_id:
+                shipment_fact = shipment_fact or self._find_shipment_fact_order(order_id)
+                if shipment_fact:
+                    pickup_node = self._find_node_by_city(shipment_fact.origin_city_std or shipment_fact.origin_city_raw)
+                    delivery_node = self._find_node_by_city(shipment_fact.destination_city_std or shipment_fact.destination_city_raw)
+
+                    if pickup_node and delivery_node:
+                        route = self.get_route_polyline(pickup_node.id, delivery_node.id)
+                        if not route['success']:
+                            return route
+
+                        polyline_coords = [[p['longitude'], p['latitude']] for p in route['polyline']]
+                        return {
+                            'success': True,
+                            'data': {
+                                'order_id': order_id,
+                                'order_number': shipment_fact.external_order_id or shipment_fact.external_shipment_id or f'SHIP-{order_id}',
+                                'route': {
+                                    'polyline': polyline_coords,
+                                    'distance_km': route['distance_km'],
+                                    'duration_minutes': route['distance_km'] / 60 * 60,
+                                    'origin': route['origin'],
+                                    'destination': route['destination']
+                                },
+                                'vehicle': {
+                                    'id': 1,
+                                    'plate_number': '京A12345',
+                                    'vehicle_type': '货车',
+                                    'driver_name': '张司机',
+                                    'driver_phone': '13800138000'
+                                }
+                            }
+                        }
+
+                    if shipment_fact.origin_lng and shipment_fact.origin_lat and shipment_fact.destination_lng and shipment_fact.destination_lat:
+                        polyline_coords = [
+                            [shipment_fact.origin_lng, shipment_fact.origin_lat],
+                            [shipment_fact.destination_lng, shipment_fact.destination_lat],
+                        ]
+                        distance = self._haversine_distance(
+                            shipment_fact.origin_lat,
+                            shipment_fact.origin_lng,
+                            shipment_fact.destination_lat,
+                            shipment_fact.destination_lng,
+                        )
+                        return {
+                            'success': True,
+                            'data': {
+                                'order_id': order_id,
+                                'order_number': shipment_fact.external_order_id or shipment_fact.external_shipment_id or f'SHIP-{order_id}',
+                                'route': {
+                                    'polyline': polyline_coords,
+                                    'distance_km': round(distance, 2),
+                                    'duration_minutes': round(distance, 2),
+                                    'origin': {'id': pickup_node.id if pickup_node else None, 'name': pickup_node.name if pickup_node else shipment_fact.origin_city_std or shipment_fact.origin_city_raw},
+                                    'destination': {'id': delivery_node.id if delivery_node else None, 'name': delivery_node.name if delivery_node else shipment_fact.destination_city_std or shipment_fact.destination_city_raw}
+                                },
+                                'vehicle': {
+                                    'id': 1,
+                                    'plate_number': '京A12345',
+                                    'vehicle_type': '货车',
+                                    'driver_name': '张司机',
+                                    'driver_phone': '13800138000'
+                                }
+                            }
+                        }
+
                 return {'success': False, 'error': '订单缺少起终点信息'}
-            
+
             # 获取车辆信息
             vehicle = None
-            if order.vehicle_id:
+            if order and order.vehicle_id:
                 vehicle = Vehicle.query.get(order.vehicle_id)
             
             # 获取路线

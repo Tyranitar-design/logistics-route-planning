@@ -5,17 +5,42 @@
         <span class="emoji">🩺</span>
         <div>
           <h3>质量报告</h3>
-          <p class="subtitle">统一展示可行性、目标摘要、求解质量与 Pareto 信息</p>
+          <p class="subtitle">从真实性、可行性、目标质量和 Pareto 规模四个层面解释当前解集质量，而不是只给“成功/失败”。</p>
         </div>
       </div>
-      <el-tag :type="report?.feasible ? 'success' : 'danger'" effect="dark" size="large">
-        {{ report?.feasible ? '可行' : '存在问题' }}
+      <el-tag
+        v-if="report"
+        :type="report?.feasible ? 'success' : 'danger'"
+        effect="dark"
+        size="large"
+      >
+        {{ report?.feasible ? '质量通过' : '存在问题' }}
       </el-tag>
     </div>
 
     <div v-if="report" class="panel-body">
+      <div class="hero-grid">
+        <div class="hero-item hero-item--primary">
+          <span class="hero-label">可行性状态</span>
+          <strong>{{ report.feasible ? '当前解满足基础可行性检查' : '当前解存在可行性问题' }}</strong>
+          <p>{{ feasibilitySummary }}</p>
+        </div>
+        <div class="hero-item">
+          <span class="hero-label">主目标值</span>
+          <strong>{{ formatNumber(report.objective_summary?.primary_objective) }}</strong>
+        </div>
+        <div class="hero-item">
+          <span class="hero-label">Gap</span>
+          <strong>{{ formatGap(report.objective_summary?.gap) }}</strong>
+        </div>
+        <div class="hero-item">
+          <span class="hero-label">Pareto 规模</span>
+          <strong>{{ report.pareto_summary?.pareto_front_size ?? report.pareto_summary?.metrics?.pareto_count ?? '-' }}</strong>
+        </div>
+      </div>
+
       <div class="section">
-        <div class="section-title">✅ 可行性状态</div>
+        <div class="section-title">✅ 可行性与告警</div>
         <el-alert
           v-if="report.feasible"
           title="当前解满足基础可行性检查"
@@ -41,33 +66,47 @@
       </div>
 
       <div class="section">
+        <div class="section-title">🛰️ 距离真实性与精度</div>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="label">距离来源</span>
+            <strong>{{ report.distance_precision_summary?.distance_source || '-' }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">精确数量</span>
+            <strong class="success">{{ report.distance_precision_summary?.exact_count ?? 0 }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">近似数量</span>
+            <strong class="warning">{{ report.distance_precision_summary?.approx_count ?? 0 }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">精确比例</span>
+            <strong>{{ formatPercent(report.distance_precision_summary?.exact_ratio) }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">近似比例</span>
+            <strong>{{ formatPercent(report.distance_precision_summary?.approx_ratio) }}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
         <div class="section-title">🎯 目标摘要</div>
-        <el-row :gutter="12">
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">主目标值</span>
-              <span class="value">{{ formatNumber(report.objective_summary?.primary_objective) }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">目标个数</span>
-              <span class="value">{{ report.objective_summary?.n_objectives ?? '-' }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">Gap</span>
-              <span class="value">{{ formatGap(report.objective_summary?.gap) }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">目标向量</span>
-              <span class="value small">{{ formatObjectives(report.objective_summary?.objective_values) }}</span>
-            </div>
-          </el-col>
-        </el-row>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="label">主目标值</span>
+            <strong>{{ formatNumber(report.objective_summary?.primary_objective) }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">目标个数</span>
+            <strong>{{ report.objective_summary?.n_objectives ?? '-' }}</strong>
+          </div>
+          <div class="metric-card metric-card--wide">
+            <span class="label">目标向量</span>
+            <strong>{{ formatObjectives(report.objective_summary?.objective_values) }}</strong>
+          </div>
+        </div>
       </div>
 
       <div class="section">
@@ -85,69 +124,33 @@
           <el-descriptions-item label="迭代次数">
             {{ report.solver_summary?.iterations ?? '-' }}
           </el-descriptions-item>
-          <el-descriptions-item label="是否最优">
+          <el-descriptions-item label="最优性证明">
             <el-tag :type="report.solver_summary?.is_optimal ? 'success' : 'info'" size="small">
-              {{ report.solver_summary?.is_optimal ? '是' : '否 / 未证明' }}
+              {{ report.solver_summary?.is_optimal ? '已证明最优' : '未证明 / 启发式' }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="距离来源">
-            {{ report.distance_precision_summary?.distance_source || '-' }}
+          <el-descriptions-item label="质量解读">
+            {{ feasibilitySummary }}
           </el-descriptions-item>
         </el-descriptions>
       </div>
 
-      <div class="section">
-        <div class="section-title">🛰️ 距离精度摘要</div>
-        <el-row :gutter="12">
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">精确数量</span>
-              <span class="value success">{{ report.distance_precision_summary?.exact_count ?? 0 }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">近似数量</span>
-              <span class="value warning">{{ report.distance_precision_summary?.approx_count ?? 0 }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">精确比例</span>
-              <span class="value">{{ formatPercent(report.distance_precision_summary?.exact_ratio) }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="6">
-            <div class="summary-item">
-              <span class="label">近似比例</span>
-              <span class="value">{{ formatPercent(report.distance_precision_summary?.approx_ratio) }}</span>
-            </div>
-          </el-col>
-        </el-row>
-      </div>
-
       <div class="section" v-if="report.pareto_summary?.enabled">
         <div class="section-title">📈 Pareto 摘要</div>
-        <el-row :gutter="12">
-          <el-col :xs="24" :sm="12" :md="8">
-            <div class="summary-item">
-              <span class="label">前沿规模</span>
-              <span class="value">{{ report.pareto_summary?.pareto_front_size ?? '-' }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="8">
-            <div class="summary-item">
-              <span class="label">Pareto 点数</span>
-              <span class="value">{{ report.pareto_summary?.metrics?.pareto_count ?? '-' }}</span>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="12" :md="8">
-            <div class="summary-item">
-              <span class="label">Spread</span>
-              <span class="value">{{ formatNumber(report.pareto_summary?.metrics?.spread) }}</span>
-            </div>
-          </el-col>
-        </el-row>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="label">前沿规模</span>
+            <strong>{{ report.pareto_summary?.pareto_front_size ?? '-' }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">Pareto 点数</span>
+            <strong>{{ report.pareto_summary?.metrics?.pareto_count ?? '-' }}</strong>
+          </div>
+          <div class="metric-card">
+            <span class="label">Spread</span>
+            <strong>{{ formatNumber(report.pareto_summary?.metrics?.spread) }}</strong>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -156,11 +159,20 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
+
 const props = defineProps({
   report: {
     type: Object,
     default: null
   }
+})
+
+const feasibilitySummary = computed(() => {
+  if (!props.report) return '-'
+  if (props.report.feasible) return '当前结果可进入业务解释与对比阶段'
+  if (props.report.violations?.length) return `${props.report.violations.length} 项问题待处理`
+  return '当前结果存在质量风险'
 })
 
 function formatNumber(value) {
@@ -191,11 +203,12 @@ function formatObjectives(values) {
 
 <style scoped>
 .quality-report-panel {
-  border: 1px solid #ebeef5;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
-  padding: 18px;
-  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.06);
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(8, 19, 34, 0.96) 0%, rgba(10, 22, 38, 0.9) 100%);
+  padding: 20px;
+  color: #ecf7ff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
 }
 
 .card-header {
@@ -220,14 +233,55 @@ function formatObjectives(values) {
 
 .title-wrap h3 {
   margin: 0;
-  font-size: 18px;
-  color: #303133;
+  font-size: 20px;
+  color: #ecf7ff;
 }
 
 .subtitle {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #909399;
+  color: rgba(236, 247, 255, 0.62);
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.2fr repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.hero-item,
+.metric-card {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hero-item--primary {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.12), rgba(17, 224, 183, 0.08));
+  border-color: rgba(0, 212, 255, 0.18);
+}
+
+.hero-label,
+.label {
+  font-size: 12px;
+  color: rgba(236, 247, 255, 0.52);
+}
+
+.hero-item strong,
+.metric-card strong {
+  color: #ecf7ff;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.hero-item p {
+  margin: 0;
+  line-height: 1.75;
+  color: rgba(236, 247, 255, 0.74);
 }
 
 .section {
@@ -237,42 +291,26 @@ function formatObjectives(values) {
 .section-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
-  margin-bottom: 10px;
+  color: #ecf7ff;
+  margin-bottom: 12px;
 }
 
-.summary-item {
-  background: #fff;
-  border: 1px solid #edf2f7;
-  border-radius: 10px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.label {
-  font-size: 12px;
-  color: #909399;
+.metric-card--wide {
+  grid-column: span 2;
 }
 
-.value {
-  font-size: 16px;
-  font-weight: 700;
-  color: #303133;
+.success {
+  color: #1ee68f !important;
 }
 
-.value.small {
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.value.success {
-  color: #67c23a;
-}
-
-.value.warning {
-  color: #e6a23c;
+.warning {
+  color: #ffbf47 !important;
 }
 
 .violation-list {
@@ -282,5 +320,27 @@ function formatObjectives(values) {
 
 .violation-list li {
   margin-bottom: 4px;
+}
+
+@media (max-width: 1200px) {
+  .hero-grid,
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-card--wide {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 768px) {
+  .hero-grid,
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-card--wide {
+    grid-column: span 1;
+  }
 }
 </style>

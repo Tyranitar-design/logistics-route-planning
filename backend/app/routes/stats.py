@@ -9,8 +9,22 @@ from flask_jwt_extended import jwt_required
 from datetime import datetime, timedelta
 from sqlalchemy import func
 from app.models import db, Order, Node, Route, Vehicle
+from app.models.layered_data import ShipmentFact
 
 stats_bp = Blueprint('stats', __name__)
+
+
+def _has_layered_shipments() -> bool:
+    return Order.query.count() == 0 and ShipmentFact.query.count() > 0
+
+
+def _get_latest_layered_shipment_date():
+    latest_timestamp = db.session.query(
+        func.max(ShipmentFact.shipped_at)
+    ).filter(ShipmentFact.shipped_at.isnot(None)).scalar()
+    if latest_timestamp is None:
+        return None
+    return latest_timestamp.date()
 
 
 @stats_bp.route('/overview', methods=['GET'])
@@ -18,6 +32,45 @@ stats_bp = Blueprint('stats', __name__)
 def get_overview():
     """获取总览统计数据"""
     try:
+        if _has_layered_shipments():
+            total_orders = ShipmentFact.query.count()
+            total_nodes = Node.query.count()
+            total_routes = Route.query.count()
+            if total_routes == 0:
+                total_routes = (
+                    db.session.query(
+                        ShipmentFact.origin_city_std,
+                        ShipmentFact.destination_city_std,
+                    )
+                    .filter(
+                        ShipmentFact.origin_city_std.isnot(None),
+                        ShipmentFact.destination_city_std.isnot(None),
+                    )
+                    .distinct()
+                    .count()
+                )
+            total_vehicles = Vehicle.query.count()
+
+            pending_orders = ShipmentFact.query.filter_by(standard_status='assigned').count()
+            in_transit_orders = ShipmentFact.query.filter_by(standard_status='in_transit').count()
+            delivered_orders = ShipmentFact.query.filter_by(standard_status='delivered').count()
+
+            available_vehicles = Vehicle.query.filter_by(status='available').count()
+            in_use_vehicles = Vehicle.query.filter_by(status='in_use').count()
+
+            return jsonify({
+                'total_orders': total_orders,
+                'total_nodes': total_nodes,
+                'total_routes': total_routes,
+                'total_vehicles': total_vehicles,
+                'pending_orders': pending_orders,
+                'in_transit_orders': in_transit_orders,
+                'delivered_orders': delivered_orders,
+                'available_vehicles': available_vehicles,
+                'in_use_vehicles': in_use_vehicles,
+                'data_source': 'shipment_fact'
+            })
+
         # 统计各表总数
         total_orders = Order.query.count()
         total_nodes = Node.query.count()
@@ -53,8 +106,24 @@ def get_overview():
 def get_order_trend():
     """获取订单趋势数据（最近7天）"""
     try:
-        today = datetime.utcnow().date()
         trend_data = []
+
+        if _has_layered_shipments():
+            latest_date = _get_latest_layered_shipment_date() or datetime.utcnow().date()
+            for i in range(6, -1, -1):
+                date = latest_date - timedelta(days=i)
+                count = ShipmentFact.query.filter(
+                    ShipmentFact.shipped_at.isnot(None),
+                    func.date(ShipmentFact.shipped_at) == date
+                ).count()
+                trend_data.append({
+                    'date': date.strftime('%m-%d'),
+                    'count': count
+                })
+
+            return jsonify({'trend': trend_data, 'data_source': 'shipment_fact'})
+
+        today = datetime.utcnow().date()
         
         for i in range(6, -1, -1):
             date = today - timedelta(days=i)
@@ -79,6 +148,29 @@ def get_order_trend():
 def get_order_distribution():
     """获取订单状态分布"""
     try:
+        if _has_layered_shipments():
+            distribution = db.session.query(
+                ShipmentFact.standard_status,
+                func.count(ShipmentFact.id).label('count')
+            ).group_by(ShipmentFact.standard_status).all()
+
+            status_map = {
+                'assigned': '已揽收',
+                'in_transit': '运输中',
+                'delivered': '已送达',
+                'exception': '异常'
+            }
+
+            result = []
+            for status, count in distribution:
+                result.append({
+                    'status': status,
+                    'name': status_map.get(status, status),
+                    'value': count
+                })
+
+            return jsonify({'distribution': result, 'data_source': 'shipment_fact'})
+
         distribution = db.session.query(
             Order.status,
             func.count(Order.id).label('count')

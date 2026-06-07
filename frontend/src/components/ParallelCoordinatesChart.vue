@@ -18,6 +18,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
+import { buildEmptyStateOption, getChartPalette } from '@/utils/chartTheme'
 
 const props = defineProps({
   solutions: {
@@ -38,10 +39,14 @@ const props = defineProps({
 
 const chartRef = ref(null)
 let chart = null
+const palette = getChartPalette()
 
 const objectiveKeys = computed(() => {
-  const first = props.solutions?.find(item => item?.objectives)?.objectives || {}
-  return Object.keys(first)
+  const keys = new Set()
+  ;(props.solutions || []).forEach(item => {
+    Object.keys(item?.objectives || {}).forEach(key => keys.add(key))
+  })
+  return Array.from(keys)
 })
 
 const dimensions = computed(() => {
@@ -79,15 +84,22 @@ const seriesData = computed(() => {
 })
 
 function getColor(type) {
-  if (type === 'weighted_best') return '#67C23A'
-  if (type === 'single_objective') return '#E6A23C'
-  return '#409EFF'
+  if (type === 'weighted_best') return palette.teal
+  if (type === 'single_objective') return palette.amber
+  return palette.cyan
 }
 
 function buildOption() {
   return {
     tooltip: {
       trigger: 'item',
+      backgroundColor: 'rgba(6, 14, 28, 0.94)',
+      borderColor: 'rgba(0, 212, 255, 0.22)',
+      borderWidth: 1,
+      textStyle: {
+        color: palette.textPrimary,
+        fontSize: 12
+      },
       formatter(params) {
         const raw = params.data || {}
         const lines = [`<strong>${raw.__name || '方案'}</strong>`]
@@ -105,7 +117,7 @@ function buildOption() {
       nameLocation: 'end',
       nameGap: 8,
       axisLabel: {
-        color: '#606266'
+        color: palette.textSecondary
       }
     })),
     parallel: {
@@ -116,13 +128,13 @@ function buildOption() {
       parallelAxisDefault: {
         type: 'value',
         nameTextStyle: {
-          color: '#303133',
+          color: palette.textPrimary,
           fontWeight: 600,
           fontSize: 12
         },
         axisLine: {
           lineStyle: {
-            color: '#dcdfe6'
+            color: palette.axis
           }
         },
         axisTick: {
@@ -131,7 +143,7 @@ function buildOption() {
         splitLine: {
           show: true,
           lineStyle: {
-            color: '#f0f2f5'
+            color: palette.split
           }
         }
       }
@@ -161,8 +173,15 @@ function formatValue(value) {
 }
 
 function renderChart() {
-  if (!chartRef.value || !seriesData.value.length || !objectiveKeys.value.length) return
+  if (!chartRef.value) return
   if (!chart) chart = echarts.init(chartRef.value)
+  if (!seriesData.value.length || !objectiveKeys.value.length) {
+    chart.setOption(buildEmptyStateOption(
+      '等待多目标方案数据',
+      '当前尚未生成可用于维度对比的解集。'
+    ), true)
+    return
+  }
   chart.setOption(buildOption(), true)
 }
 

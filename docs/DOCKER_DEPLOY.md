@@ -162,9 +162,10 @@ environment:
   - SECRET_KEY=your-secret-key-here
   - JWT_SECRET_KEY=your-jwt-secret-here
   
-  # API Keys
-  - AMAP_KEY=e471e7d99965ef1f1a0d4113f580f5db
-  - TIANAPI_KEY=e2c7bbdbce2502c8460aa05ad0d57fe1
+  # API Keys（按需配置，不要提交真实 Key）
+  - AMAP_WEB_KEY=${AMAP_WEB_KEY:-}
+  - AMAP_SERVICE_KEY=${AMAP_SERVICE_KEY:-}
+  - TIANAPI_KEY=${TIANAPI_KEY:-}
 ```
 
 ### 数据持久化

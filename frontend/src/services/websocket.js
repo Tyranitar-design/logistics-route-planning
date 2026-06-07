@@ -34,20 +34,26 @@ class WebSocketService {
 
     console.log('[WS] 正在连接...', url)
     
-    // 开发环境使用后端地址，生产环境使用当前域名
-    const socketUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:5000'
+    // 开发环境优先跟随当前页面 host，避免 localhost / 127.0.0.1 混用导致 websocket 握手失败
+    const currentProtocol = window.location.protocol === 'https:' ? 'https' : 'http'
+    const currentHost = window.location.hostname || '127.0.0.1'
+    const devSocketUrl = url || `${currentProtocol}://${currentHost}:5000`
+    const isProd = import.meta.env.PROD
+    const socketUrl = isProd ? window.location.origin : devSocketUrl
+    const transports = isProd ? ['websocket', 'polling'] : ['polling']
 
     console.log('[WS] 连接地址:', socketUrl)
+    console.log('[WS] 传输模式:', transports.join(', '))
 
     this.socket = io(socketUrl, {
       path: '/socket.io/',
-      transports: ['websocket', 'polling'],  // websocket 优先
+      transports,
       reconnection: true,
       reconnectionAttempts: this.maxReconnectAttempts,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      upgrade: true,
-      rememberUpgrade: true,
+      upgrade: isProd,
+      rememberUpgrade: false,
       forceNew: true,
       timeout: 20000
     })

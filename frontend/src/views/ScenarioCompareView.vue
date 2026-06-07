@@ -211,7 +211,7 @@ let barChart = null
 async function loadScenarios() {
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:5000/api/network/scenarios', {
+    const response = await fetch('/api/network/scenarios', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     const data = await response.json()
@@ -229,7 +229,7 @@ async function loadScenarioA(id) {
   if (!id) return
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`http://localhost:5000/api/network/scenarios/${id}`, {
+    const response = await fetch(`/api/network/scenarios/${id}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     const data = await response.json()
@@ -246,7 +246,7 @@ async function loadScenarioB(id) {
   if (!id) return
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`http://localhost:5000/api/network/scenarios/${id}`, {
+    const response = await fetch(`/api/network/scenarios/${id}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     const data = await response.json()

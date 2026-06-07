@@ -178,6 +178,25 @@
             </div>
           </template>
 
+          <el-alert
+            v-if="activeTruthMeta"
+            class="truth-alert"
+            :type="activeTruthMeta.alertType"
+            :closable="false"
+            show-icon
+          >
+            <template #title>
+              <span>真实性等级 {{ activeTruthMeta.level }}：{{ activeTruthMeta.message }}</span>
+            </template>
+            <div class="truth-tags">
+              <el-tag size="small" type="info">距离：{{ activeTruthMeta.distanceSource }}</el-tag>
+              <el-tag size="small" type="warning">路径：{{ activeTruthMeta.pathSource }}</el-tag>
+              <el-tag v-if="activeTruthMeta.fallbackReason" size="small" type="danger">
+                降级：{{ activeTruthMeta.fallbackReason }}
+              </el-tag>
+            </div>
+          </el-alert>
+
           <!-- 2D 地图 -->
           <div v-show="viewMode === '2d'" ref="chartRef" class="chart-container"></div>
           
@@ -200,6 +219,15 @@
               <el-tag type="success">求解耗时: {{ result.solve_time }}s</el-tag>
             </div>
           </template>
+
+          <el-alert
+            v-if="activeTruthMeta?.isApproximate"
+            class="truth-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="当前网络结果包含近似或投影语义，分配连线不是高德真实导航路径"
+          />
 
           <!-- 关键指标 -->
           <el-row :gutter="20" class="metrics-row">
@@ -390,6 +418,14 @@
             {{ (row.service_level * 100).toFixed(1) }}%
           </template>
         </el-table-column>
+        <el-table-column label="真实性" width="180">
+          <template #default="{ row }">
+            <el-tag size="small" :type="buildNetworkTruthMeta(row).alertType">
+              {{ row.authenticity_level || '-' }}
+            </el-tag>
+            <div class="scenario-truth">{{ row.path_source || '-' }}</div>
+          </template>
+        </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="180">
           <template #default="{ row }">
             {{ new Date(row.created_at).toLocaleString() }}
@@ -415,6 +451,8 @@ import { ElMessage } from 'element-plus'
 import { QuestionFilled, CaretRight, FolderAdd, FolderOpened } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import Network3DVisualization from '@/components/Network3DVisualization.vue'
+import { buildEmptyStateOption, getChartPalette } from '@/utils/chartTheme'
+import { buildNetworkTruthMeta } from '@/utils/networkTruthMeta'
 
 const router = useRouter()
 
@@ -440,6 +478,7 @@ const config = reactive({
 const customers = ref([])
 const candidates = ref([])
 const result = ref(null)
+const dataTruth = ref(null)
 const generating = ref(false)
 const syncing = ref(false)
 const solving = ref(false)
@@ -451,6 +490,7 @@ const heatmapChartRef = ref(null)
 let chartInstance = null
 let radarChartInstance = null
 let heatmapChartInstance = null
+const palette = getChartPalette()
 
 // 场景管理
 const showSaveDialog = ref(false)
@@ -463,10 +503,27 @@ const saveForm = reactive({
   status: 'draft'
 })
 
+const apiBase = computed(() => `${window.location.protocol}//${window.location.hostname}:5000`)
+
 // 计算属性
 const hasData = computed(() => customers.value.length > 0 && candidates.value.length > 0)
 const totalDemand = computed(() => customers.value.reduce((sum, c) => sum + c.demand, 0))
 const avgDemand = computed(() => hasData.value ? totalDemand.value / customers.value.length : 0)
+const activeTruthMeta = computed(() => {
+  if (result.value) return buildNetworkTruthMeta(result.value)
+  if (dataTruth.value) return buildNetworkTruthMeta(dataTruth.value)
+  return null
+})
+
+function getCustomerSymbolSize(demand) {
+  const numericDemand = Number(demand || 0)
+  if (!Number.isFinite(numericDemand) || numericDemand <= 0) return 10
+  return Math.max(10, Math.min(28, Math.sqrt(numericDemand) / 2.6))
+}
+
+function getCandidateSymbolSize(isSelected) {
+  return isSelected ? 22 : 14
+}
 
 // 分配结果表格
 const assignmentTable = computed(() => {
@@ -510,7 +567,7 @@ async function generateData() {
   
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:5000/api/network/test-data/generate', {
+    const response = await fetch(`${apiBase.value}/api/network/test-data/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -528,6 +585,12 @@ async function generateData() {
     if (data.status === 'success') {
       customers.value = data.customers
       candidates.value = data.candidates
+      dataTruth.value = extractTruthFields(data, {
+        distance_source: 'synthetic_generator',
+        path_source: 'synthetic_sampling',
+        authenticity_level: 'D',
+        fallback_reason: 'generated_test_data'
+      })
       ElMessage.success(`已生成 ${data.customers.length} 个客户和 ${data.candidates.length} 个候选位置`)
       
       // 更新图表
@@ -550,19 +613,19 @@ async function syncFromNodes() {
   
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:5000/api/network/import/nodes', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        customer_types: ['customer'],
-        candidate_types: ['warehouse', 'distribution'],
-        default_fixed_cost: 100000,
-        default_capacity: 500
+      const response = await fetch(`${apiBase.value}/api/network/import/nodes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          customer_types: ['customer', 'station'],
+          candidate_types: ['warehouse', 'distribution'],
+          default_fixed_cost: 100000,
+          default_capacity: 500
+        })
       })
-    })
     
     const data = await response.json()
     
@@ -576,6 +639,12 @@ async function syncFromNodes() {
       
       customers.value = data.customers
       candidates.value = data.candidates
+      dataTruth.value = extractTruthFields(data, {
+        distance_source: 'derived_from_input',
+        path_source: 'node_import_dataset',
+        authenticity_level: 'C',
+        fallback_reason: 'imported_nodes_are_coordinate_dataset_not_navigation_path'
+      })
       ElMessage.success(`已同步 ${data.customers.length} 个客户和 ${data.candidates.length} 个候选位置`)
       
       // 更新图表
@@ -633,7 +702,7 @@ async function solveProblem() {
       }
     }
     
-    const response = await fetch(`http://localhost:5000/api/network/${endpoint}`, {
+    const response = await fetch(`${apiBase.value}/api/network/${endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -671,35 +740,44 @@ function renderChart() {
     chartInstance = echarts.init(chartRef.value)
   }
   
+  if (!customers.value.length && !candidates.value.length) {
+    chartInstance.setOption(
+      buildEmptyStateOption('等待网络节点数据', '当前还没有可用于渲染的客户或候选设施坐标。', palette.cyan),
+      true
+    )
+    return
+  }
+
   const chartData = []
   const links = []
   
   // 客户点（确保唯一名称）
-  customers.value.forEach((c, idx) => {
-    chartData.push({
-      name: `客户_${c.id}_${c.name}`,
-      displayName: c.name,
-      value: [c.lon, c.lat],
-      symbolSize: Math.max(8, (c.demand || 100) / 20),
-      itemStyle: { color: '#91CC75' },
-      category: 0
+    customers.value.forEach((c, idx) => {
+      chartData.push({
+        name: `客户_${c.id}_${c.name}`,
+        displayName: c.name,
+        value: [c.lon, c.lat],
+        symbolSize: getCustomerSymbolSize(c.demand),
+        demand: c.demand || 0,
+        itemStyle: { color: '#91CC75' },
+        category: 0
+      })
     })
-  })
   
   // 候选/选中设施
   const selectedIds = result.value?.selected_facilities?.map(f => f.id) || []
   candidates.value.forEach((c, idx) => {
     const isSelected = selectedIds.includes(c.id)
-    chartData.push({
-      name: `设施_${c.id}_${c.name}`,
-      displayName: c.name,
-      value: [c.lon, c.lat],
-      symbolSize: isSelected ? 25 : 15,
-      itemStyle: { 
-        color: isSelected ? '#EE6666' : '#999999',
-        borderColor: isSelected ? '#FF0000' : '#666666',
-        borderWidth: isSelected ? 3 : 1
-      },
+      chartData.push({
+        name: `设施_${c.id}_${c.name}`,
+        displayName: c.name,
+        value: [c.lon, c.lat],
+        symbolSize: getCandidateSymbolSize(isSelected),
+        itemStyle: {
+          color: isSelected ? '#EE6666' : '#999999',
+          borderColor: isSelected ? '#FF0000' : '#666666',
+          borderWidth: isSelected ? 3 : 1
+        },
       category: isSelected ? 1 : 2
     })
   })
@@ -725,61 +803,207 @@ function renderChart() {
   }
   
   const option = {
+    backgroundColor: 'transparent',
     title: {
       text: '物流网络可视化',
-      left: 'center'
+      left: 'center',
+      top: 14,
+      textStyle: {
+        color: '#ecf7ff',
+        fontSize: 16,
+        fontWeight: 700
+      },
+      subtext: '中国地图下的客户-设施网络关系',
+      subtextStyle: {
+        color: 'rgba(236, 247, 255, 0.56)',
+        fontSize: 11
+      }
     },
     tooltip: {
       trigger: 'item',
+      backgroundColor: 'rgba(6, 14, 28, 0.94)',
+      borderColor: 'rgba(0, 212, 255, 0.22)',
+      borderWidth: 1,
+      textStyle: {
+        color: '#ecf7ff',
+        fontSize: 12
+      },
+      extraCssText: 'box-shadow: 0 16px 48px rgba(0,0,0,0.35); border-radius: 12px;',
       formatter: function(params) {
         if (params.dataType === 'node') {
           const displayName = params.data.displayName || params.name
-          return `${displayName}<br/>坐标: ${params.value[1].toFixed(2)}, ${params.value[0].toFixed(2)}`
+          const typeLabel = params.data.category === 0
+            ? '客户节点'
+            : (params.data.category === 1 ? '选中设施' : '候选设施')
+          return `${displayName}<br/>类型: ${typeLabel}<br/>坐标: ${params.value[1].toFixed(2)}, ${params.value[0].toFixed(2)}`
         }
-        return params.name
+        return `${params.data?.sourceName || params.data?.source || ''} → ${params.data?.targetName || params.data?.target || ''}<br/>需求量: ${params.data?.value || '-'}`
       }
     },
     legend: {
       data: ['客户', '选中设施', '候选位置'],
-      bottom: 10
+      bottom: 12,
+      textStyle: {
+        color: 'rgba(236, 247, 255, 0.72)',
+        fontSize: 11
+      },
+      itemWidth: 12,
+      itemHeight: 12
     },
     geo: {
       map: 'china',
       roam: true,
-      emphasis: {
-        label: { show: true }
-      },
+      zoom: 1.12,
+      top: 70,
+      bottom: 24,
       itemStyle: {
-        areaColor: '#f3f3f3',
-        borderColor: '#999'
-      }
+        areaColor: '#12243c',
+        borderColor: 'rgba(82, 178, 255, 0.26)',
+        borderWidth: 1
+      },
+      emphasis: {
+        label: { show: false },
+        itemStyle: {
+          areaColor: '#20395e'
+        }
+      },
+      silent: false
     },
     series: [{
       type: 'graph',
       coordinateSystem: 'geo',
       data: chartData,
-      links: links,
+      links: links.map(link => ({
+        ...link,
+        sourceName: link.source.replace(/^客户_\d+_/, '').replace(/^设施_\d+_/, ''),
+        targetName: link.target.replace(/^客户_\d+_/, '').replace(/^设施_\d+_/, '')
+      })),
       layout: 'none',
-      symbolSize: 10,
+      symbolSize: function (value, params) {
+        if (params.data.category === 0) return params.data.symbolSize || getCustomerSymbolSize(params.data.demand)
+        return params.data.symbolSize || getCandidateSymbolSize(params.data.category === 1)
+      },
       label: {
         show: true,
         position: 'right',
-        fontSize: 10
+        color: '#f5fbff',
+        fontSize: 10,
+        formatter: ({ data }) => data.displayName
       },
       lineStyle: {
-        color: '#5470C6',
-        width: 2,
-        curveness: 0.2
+        color: 'rgba(0, 212, 255, 0.42)',
+        width: 1.8,
+        curveness: 0.18,
+        opacity: 0.7
       },
       emphasis: {
-        focus: 'adjacency'
+        focus: 'adjacency',
+        lineStyle: {
+          width: 3,
+          color: '#11e0b7'
+        }
+      },
+      itemStyle: {
+        shadowBlur: 18,
+        shadowColor: 'rgba(0, 212, 255, 0.25)'
       },
       categories: [
         { name: '客户' },
         { name: '选中设施' },
         { name: '候选位置' }
-      ]
-    }]
+      ],
+      zlevel: 2
+    }, {
+      type: 'scatter',
+      coordinateSystem: 'geo',
+      silent: true,
+      data: chartData.filter(item => item.category === 0).map(item => ({
+        value: item.value,
+        symbolSize: Math.max(4, Math.min(8, (item.symbolSize || 10) * 0.35))
+      })),
+      itemStyle: {
+        color: 'rgba(145, 204, 117, 0.22)'
+      },
+      zlevel: 0
+    }, {
+      type: 'effectScatter',
+      coordinateSystem: 'geo',
+      data: chartData.filter(item => item.category === 1).map(item => ({
+        ...item,
+        value: item.value
+      })),
+      symbolSize: 28,
+      showEffectOn: 'render',
+      rippleEffect: {
+        brushType: 'stroke',
+        scale: 3
+      },
+      itemStyle: {
+        color: '#ff8c7a',
+        shadowBlur: 24,
+        shadowColor: 'rgba(255, 140, 122, 0.45)'
+      },
+      tooltip: { show: false },
+      zlevel: 3
+    }, {
+      type: 'lines',
+      coordinateSystem: 'geo',
+      data: links.map(link => {
+        const sourceNode = chartData.find(item => item.name === link.source)
+        const targetNode = chartData.find(item => item.name === link.target)
+        return {
+          coords: [sourceNode?.value, targetNode?.value],
+          value: link.value
+        }
+      }).filter(item => item.coords[0] && item.coords[1]),
+      lineStyle: {
+        color: 'rgba(17, 224, 183, 0.22)',
+        width: 0
+      },
+      effect: {
+        show: true,
+        period: 5,
+        trailLength: 0.12,
+        symbol: 'circle',
+        symbolSize: 3,
+        color: '#11e0b7'
+      },
+      tooltip: { show: false },
+      zlevel: 1
+    }],
+    graphic: [
+      {
+        type: 'group',
+        right: 24,
+        top: 80,
+        children: [
+          {
+            type: 'rect',
+            shape: { width: 178, height: 90, r: 12 },
+            style: {
+              fill: 'rgba(6, 14, 28, 0.82)',
+              stroke: 'rgba(0, 212, 255, 0.16)',
+              lineWidth: 1
+            }
+          },
+          {
+            type: 'text',
+            left: 14,
+            top: 12,
+            style: {
+              text: [
+                `客户节点 ${customers.value.length} 个`,
+                `候选设施 ${candidates.value.length} 个`,
+                `当前连线 ${links.length} 条`
+              ].join('\n'),
+              font: '12px Microsoft YaHei',
+              fill: 'rgba(236, 247, 255, 0.82)',
+              lineHeight: 24
+            }
+          }
+        ]
+      }
+    ]
   }
   
   chartInstance.setOption(option, true)
@@ -918,13 +1142,13 @@ function renderHeatmapChart() {
         color = '#909399' // 灰色 - 偏远
       }
       
-      heatmapData.push({
-        name: cust.name,
-        value: [cust.lon, cust.lat, distance],
-        symbolSize: Math.max(10, cust.demand / 15),
-        itemStyle: {
-          color: color,
-          borderColor: '#fff',
+        heatmapData.push({
+          name: cust.name,
+          value: [cust.lon, cust.lat, distance],
+          symbolSize: getCustomerSymbolSize(cust.demand),
+          itemStyle: {
+            color: color,
+            borderColor: '#fff',
           borderWidth: 2
         }
       })
@@ -966,13 +1190,13 @@ function renderHeatmapChart() {
         borderColor: '#ccc'
       }
     },
-    series: [{
-      type: 'scatter',
-      coordinateSystem: 'geo',
-      data: heatmapData,
-      symbolSize: function(val) {
-        return Math.max(8, val[2] / 5)
-      },
+      series: [{
+        type: 'scatter',
+        coordinateSystem: 'geo',
+        data: heatmapData,
+        symbolSize: function(val, params) {
+          return params?.data?.symbolSize || 12
+        },
       label: {
         show: true,
         position: 'right',
@@ -1009,13 +1233,20 @@ function renderHeatmapChart() {
 async function loadScenarios() {
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:5000/api/network/scenarios', {
+      const response = await fetch(`${apiBase.value}/api/network/scenarios`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     const data = await response.json()
     
     if (data.status === 'success') {
-      scenarios.value = data.scenarios
+      scenarios.value = (data.scenarios || []).map(scenario => ({
+        ...scenario,
+        ...extractTruthFields(scenario, extractTruthFields(data, {
+          distance_source: 'derived_from_scenario',
+          path_source: 'scenario_index',
+          authenticity_level: 'C'
+        }))
+      }))
       showScenariosDialog.value = true
     }
   } catch (error) {
@@ -1032,7 +1263,7 @@ async function saveScenario() {
   saving.value = true
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:5000/api/network/scenarios', {
+      const response = await fetch(`${apiBase.value}/api/network/scenarios`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1057,7 +1288,11 @@ async function saveScenario() {
         total_fixed_cost: result.value?.total_fixed_cost || 0,
         transport_cost: result.value?.transport_cost || 0,
         solve_time: result.value?.solve_time || 0,
-        solver: result.value?.solver || 'CBC'
+        solver: result.value?.solver || 'CBC',
+        distance_source: result.value?.distance_source,
+        path_source: result.value?.path_source,
+        authenticity_level: result.value?.authenticity_level,
+        fallback_reason: result.value?.fallback_reason
       })
     })
     
@@ -1091,6 +1326,10 @@ function loadScenario(scenario) {
     transport_cost: scenario.transport_cost,
     solve_time: scenario.solve_time,
     solver: scenario.solver,
+    distance_source: scenario.distance_source || 'derived_from_scenario',
+    path_source: scenario.path_source || 'scenario_snapshot',
+    authenticity_level: scenario.authenticity_level || 'C',
+    fallback_reason: scenario.fallback_reason,
     // 添加服务指标用于雷达图
     objectives: {
       total_cost: scenario.total_cost,
@@ -1123,7 +1362,7 @@ function loadScenario(scenario) {
 async function deleteScenario(scenarioId) {
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`http://localhost:5000/api/network/scenarios/${scenarioId}`, {
+      const response = await fetch(`${apiBase.value}/api/network/scenarios/${scenarioId}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
     })
@@ -1136,6 +1375,15 @@ async function deleteScenario(scenarioId) {
     }
   } catch (error) {
     ElMessage.error('删除失败: ' + error.message)
+  }
+}
+
+function extractTruthFields(source = {}, defaults = {}) {
+  return {
+    distance_source: source.distance_source || defaults.distance_source,
+    path_source: source.path_source || defaults.path_source,
+    authenticity_level: source.authenticity_level || defaults.authenticity_level,
+    fallback_reason: source.fallback_reason || defaults.fallback_reason
   }
 }
 
@@ -1236,6 +1484,25 @@ onMounted(async () => {
   border-radius: 4px;
   color: white;
   font-size: 12px;
+}
+
+.truth-alert {
+  margin-bottom: 12px;
+}
+
+.truth-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.scenario-truth {
+  margin-top: 4px;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.3;
+  word-break: break-word;
 }
 
 .metrics-row {

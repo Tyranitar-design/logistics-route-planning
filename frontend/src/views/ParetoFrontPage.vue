@@ -57,6 +57,20 @@
           <template #header>
             <span>📊 最优解</span>
           </template>
+
+          <el-alert
+            v-if="result.authenticity"
+            :title="result.authenticity.is_strict ? '严格真实模式' : '真实性说明'"
+            :type="getAuthenticityAlertType(result.authenticity)"
+            :closable="false"
+            style="margin-bottom: 12px;"
+          >
+            <template #default>
+              <div style="font-size: 12px; line-height: 1.8;">
+                {{ result.authenticity.message }}
+              </div>
+            </template>
+          </el-alert>
           
           <el-row :gutter="10">
             <el-col :span="8">
@@ -74,7 +88,13 @@
           
           <div>
             <span>解集大小: </span>
-            <el-tag type="success">{{ paretoSolutions.length }} 个非支配解</el-tag>
+            <el-tag :type="paretoMeta.isProjection ? 'warning' : 'success'">
+              {{ paretoSolutions.length }} 个{{ paretoMeta.isProjection ? '代表性解' : '非支配解' }}
+            </el-tag>
+          </div>
+          <div class="front-quality-block">
+            <span>前沿质量: </span>
+            <el-tag :type="paretoMeta.alertType">{{ paretoMeta.label }}</el-tag>
           </div>
           <div style="margin-top: 10px">
             <span>求解时间: </span>
@@ -88,13 +108,24 @@
         <el-card>
           <template #header>
             <span>📈 Pareto 前沿可视化</span>
-            <el-tag type="info" size="small" style="margin-left: 10px">B4 新组件集成</el-tag>
+            <el-tag type="success" size="small" style="margin-left: 10px">决策解释视图</el-tag>
           </template>
 
           <div class="visual-stack">
+            <el-alert
+              v-if="paretoMeta.count"
+              :type="paretoMeta.alertType"
+              :closable="false"
+              class="front-quality-alert"
+            >
+              <template #title>前沿质量：{{ paretoMeta.label }}</template>
+              <div>{{ paretoMeta.message }}</div>
+            </el-alert>
+
             <ParetoScatterPlot
               :solutions="paretoRecommendationCards"
               :objective-labels="objectiveLabels"
+              @solution-click="onSolutionClick"
             />
 
             <ParallelCoordinatesChart
@@ -102,6 +133,27 @@
               :objective-labels="objectiveLabels"
             />
           </div>
+
+          <el-card
+            v-if="selectedParetoCard"
+            shadow="never"
+            style="margin-top: 18px; border-radius: 14px;"
+          >
+            <template #header>
+              <span>🧭 当前选中解说明</span>
+            </template>
+            <div style="line-height: 1.8;">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom: 8px;">
+                <strong>{{ selectedParetoCard.title }}</strong>
+                <el-tag size="small" :type="selectedParetoCard.type === 'weighted_best' ? 'success' : 'info'">
+                  {{ selectedParetoCard.type === 'weighted_best' ? '推荐最优' : 'Pareto 解' }}
+                </el-tag>
+              </div>
+              <div style="font-size: 13px; color: #606266;">
+                {{ selectedParetoCard.description }}
+              </div>
+            </div>
+          </el-card>
         </el-card>
         
         <!-- 解集详情 -->
@@ -140,7 +192,7 @@
           </el-table>
           
           <div v-if="paretoSolutions.length > 10" style="margin-top: 10px; color: #909399; font-size: 12px;">
-            显示前 10 个解，共 {{ paretoSolutions.length }} 个非支配解
+            显示前 10 个解，共 {{ paretoSolutions.length }} 个{{ paretoMeta.isProjection ? '代表性解' : '非支配解' }}
           </div>
         </el-card>
       </el-col>
@@ -154,6 +206,7 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import ParetoScatterPlot from '../components/ParetoScatterPlot.vue'
 import ParallelCoordinatesChart from '../components/ParallelCoordinatesChart.vue'
+import { buildParetoFrontMeta, extractParetoSolutions } from '../utils/paretoTruthMeta'
 import * as echarts from 'echarts'
 import 'echarts-gl'
 
@@ -162,6 +215,7 @@ const optimizing = ref(false)
 const result = ref(null)
 const paretoChartRef = ref(null)
 const paretoSolutions = ref([])
+const paretoMeta = ref(buildParetoFrontMeta({}))
 const displayMode = ref('3d')
 let paretoChart = null
 
@@ -193,6 +247,8 @@ const paretoRecommendationCards = computed(() => {
     }
   }))
 })
+const selectedSolutionIndex = ref(-1)
+const selectedParetoCard = computed(() => paretoRecommendationCards.value[selectedSolutionIndex.value] || paretoRecommendationCards.value[0] || null)
 
 // 加载演示数据
 async function loadDemoData() {
@@ -229,10 +285,9 @@ async function runOptimization() {
     result.value = res.data
     
     if (res.data.success) {
-      // 生成 Pareto 解集
       generateParetoSolutions(res.data)
       
-      ElMessage.success(`优化完成！找到 ${paretoSolutions.value.length} 个非支配解`)
+      ElMessage.success(`优化完成！展示 ${paretoSolutions.value.length} 个${paretoMeta.value.isProjection ? '代表性解' : '非支配解'}`)
       nextTick(() => drawParetoChart())
     } else {
       ElMessage.error(res.data.error || '优化失败')
@@ -244,36 +299,23 @@ async function runOptimization() {
   }
 }
 
-// 生成 Pareto 解集（模拟真实的非支配解集合）
 function generateParetoSolutions(data) {
-  const solutions = []
-  const baseObjectives = data.objectives || [100, 200, 3]
-  const n_solutions = data.pareto_front_size || 20
-  
-  // 当前最优解
-  solutions.push([...baseObjectives])
-  
-  // 生成多样化的非支配解
-  for (let i = 1; i < n_solutions; i++) {
-    const factor = i / n_solutions
-    
-    // 三个目标之间的权衡
-    // 距离增加 → 时间减少 或 车辆数增加
-    const distanceFactor = 0.7 + factor * 0.6
-    const timeFactor = 1.3 - factor * 0.5
-    const vehicleFactor = factor > 0.5 ? 1 : 0
-    
-    solutions.push([
-      baseObjectives[0] * distanceFactor * (0.9 + Math.random() * 0.2),
-      baseObjectives[1] * timeFactor * (0.9 + Math.random() * 0.2),
-      baseObjectives[2] + vehicleFactor + (Math.random() * 0.5)
-    ])
-  }
-  
-  // 按距离排序
+  const solutions = extractParetoSolutions(data)
   solutions.sort((a, b) => a[0] - b[0])
   
   paretoSolutions.value = solutions
+  paretoMeta.value = buildParetoFrontMeta(data, solutions)
+  selectedSolutionIndex.value = solutions.length ? 0 : -1
+}
+
+function onSolutionClick(solution, index) {
+  selectedSolutionIndex.value = index
+}
+
+function getAuthenticityAlertType(auth) {
+  if (auth?.level === 'A') return 'success'
+  if (auth?.level === 'B') return 'warning'
+  return 'info'
 }
 
 // 绘制 Pareto 前沿图
@@ -523,5 +565,13 @@ onMounted(() => {
 .subtitle {
   color: #666;
   font-size: 14px;
+}
+
+.front-quality-block {
+  margin-top: 10px;
+}
+
+.front-quality-alert {
+  line-height: 1.7;
 }
 </style>

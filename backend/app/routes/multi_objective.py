@@ -151,6 +151,19 @@ def nsga_optimize():
                 'demand': demand
             })
         
+        if not customers and destination_id:
+            dest_node = Node.query.get(destination_id)
+            if dest_node and dest_node.id != depot.id and dest_node.longitude and dest_node.latitude:
+                print("[NSGA优化] 无匹配订单，按指定起终点构建真实 OD 候选路线")
+                return jsonify(_build_specified_od_nsga_projection(
+                    depot=depot,
+                    destination=dest_node,
+                    solver=solver,
+                    n_gen=n_gen,
+                    n_vehicles=n_vehicles,
+                    vehicle_capacity=vehicle_capacity,
+                ))
+
         # 如果没有订单，使用所有非仓库节点作为客户
         if not customers:
             print("[NSGA优化] 没有订单，使用所有非仓库节点")
@@ -239,6 +252,146 @@ def nsga_optimize():
             'success': False,
             'error': str(e)
         }), 500
+
+
+def _node_route_payload(node):
+    return {
+        'id': node.id,
+        'name': node.name,
+        'longitude': float(node.longitude or 0),
+        'latitude': float(node.latitude or 0),
+        'type': node.type,
+    }
+
+
+def _build_specified_od_nsga_projection(depot, destination, solver, n_gen, n_vehicles, vehicle_capacity):
+    """Build an explicit OD response instead of silently expanding to all nodes.
+
+    NSGA VRP solvers evaluate depot-customer-depot tours. For a UI request with
+    an explicit origin and destination, that is the wrong problem shape: the
+    user asked for one OD path, not a fleet tour over every known node.
+    """
+    optimizer = get_multi_objective_optimizer()
+    candidates = _build_specified_od_route_candidates(depot, destination)
+    truth_meta = _truth_meta_from_routes(candidates)
+    pareto_solutions = optimizer.find_pareto_front(candidates)
+    front_quality = _front_quality_for_route_count(len(candidates), len(pareto_solutions))
+    pareto_front = []
+    for i, solution in enumerate(pareto_solutions):
+        front_point = {
+            'type': 'pareto',
+            'title': f'候选路线 {i + 1}',
+            'description': optimizer._generate_description(solution),
+            'path': solution.path,
+            'objectives': solution.objectives,
+            'rank': solution.rank,
+            'crowding_distance': 9999 if solution.crowding_distance == float('inf') else solution.crowding_distance,
+        }
+        pareto_front.append(_attach_route_candidate_metadata(front_point, candidates))
+    pareto_front = _attach_explanations_to_recommendations(
+        pareto_front,
+        candidates,
+        truth_meta,
+        front_quality,
+    )
+
+    representative = min(
+        candidates,
+        key=lambda item: item.get('objectives', {}).get('distance', float('inf')),
+    )
+    representative_objectives = representative.get('objectives', {})
+    objectives = [
+        float(representative_objectives.get('distance', 0)),
+        float(representative_objectives.get('time', 0)),
+        1.0,
+    ]
+    precision = truth_meta.get('distance_precision') or {}
+    cache_stats = truth_meta.get('distance_cache_stats') or {}
+    source_summary = truth_meta.get('source_summary') or {}
+    metadata = truth_meta.get('distance_metadata') or {}
+    fallback_reason = truth_meta.get('fallback_reason')
+    authenticity_level = truth_meta.get('authenticity_level') or 'C'
+    fresh_amap_count = int(precision.get('fresh_amap_count', 0) or 0)
+    exact_cache_count = int(precision.get('exact_cache_count', 0) or 0)
+
+    return {
+        'success': True,
+        'problem_mode': 'specified_origin_destination',
+        'routes': [
+            {
+                'route_candidate_id': route.get('route_candidate_id'),
+                'path': [node.get('name') for node in route.get('path', [])],
+                'objectives': route.get('objectives', {}),
+                'route_strategy': route.get('route_strategy'),
+            }
+            for route in candidates
+        ],
+        'objectives': objectives,
+        'pareto_front': pareto_front,
+        'pareto_front_size': len(pareto_front),
+        'pareto_summary': {
+            'front_quality': front_quality,
+            'reason': 'explicit_origin_destination_without_orders',
+            'pareto_count': len(pareto_front),
+            'total_routes': len(candidates),
+        },
+        'front_quality': front_quality,
+        'solve_time': 0.0,
+        'solver': solver,
+        'solver_status': 'specified_od_route_candidates'
+        if front_quality != 'single_solution_projection'
+        else 'specified_od_projection',
+        'n_orders': 0,
+        'n_customers': 1,
+        'n_vehicles': 1,
+        'depot': {'id': depot.id, 'name': depot.name, 'pos': [float(depot.longitude), float(depot.latitude)]},
+        'destination': {
+            'id': destination.id,
+            'name': destination.name,
+            'pos': [float(destination.longitude), float(destination.latitude)],
+        },
+        'order_info': [],
+        **truth_meta,
+        'distance_precision': precision,
+        'distance_cache_stats': cache_stats,
+        'source_summary': source_summary,
+        'distance_metadata': {
+            **metadata,
+            'distance_source': truth_meta.get('distance_source'),
+            'path_source': truth_meta.get('path_source'),
+            'authenticity_level': authenticity_level,
+            'fallback_reason': fallback_reason,
+            'vehicle_capacity': vehicle_capacity,
+            'requested_n_vehicles': n_vehicles,
+            'n_gen': n_gen,
+        },
+        'distance_source': truth_meta.get('distance_source'),
+        'path_source': truth_meta.get('path_source'),
+        'authenticity_level': authenticity_level,
+        'fallback_reason': fallback_reason,
+        'authenticity': {
+            'level': authenticity_level,
+            'distance_source': truth_meta.get('distance_source'),
+            'path_source': truth_meta.get('path_source'),
+            'fallback_reason': fallback_reason,
+            'message': '指定起终点请求未匹配待配送订单，返回真实 OD 候选路线；若候选不足会明确标注前沿质量。',
+        },
+        'build_metadata': {
+            'problem_type': 'specified_origin_destination',
+            'n_customers': 1,
+            'n_vehicles': 1,
+            'distance_precision': precision,
+            'distance_cache_stats': cache_stats,
+            'source_summary': source_summary,
+            'distance_metadata': metadata,
+            'use_precise_distance': True,
+            'strategy': representative.get('route_strategy', 0),
+            'fallback_reason': fallback_reason,
+            'exact_distance_available': authenticity_level in {'A', 'B'},
+            'fresh_amap_count': fresh_amap_count,
+            'exact_cache_count': exact_cache_count,
+        },
+    }
 
 
 @multi_obj_bp.route('/algorithms', methods=['GET'])
@@ -369,70 +522,67 @@ def optimize_route():
                 seen_paths.add(path_key)
                 unique_routes.append(route)
         
-        # 如果没有找到路径，生成基于直线距离的模拟路径
+        # 如果没有找到图路径，按指定起终点构造可解释的 OD 候选路线。
+        # 不再使用裸直线距离伪装成正常优化结果。
         if not unique_routes:
             origin_node = Node.query.get(int(origin_id))
             dest_node = Node.query.get(int(destination_id))
             
             if origin_node and dest_node:
-                # 计算直线距离
-                import math
-                lat1, lng1 = float(origin_node.latitude or 0), float(origin_node.longitude or 0)
-                lat2, lng2 = float(dest_node.latitude or 0), float(dest_node.longitude or 0)
-                R = 6371
-                dlat = math.radians(lat2 - lat1)
-                dlng = math.radians(lng2 - lng1)
-                a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
-                direct_distance = R * 2 * math.asin(math.sqrt(a))
-                
-                # 估算时间和成本（假设平均速度 60km/h，成本 0.8元/km）
-                estimated_time = direct_distance / 60 * 60  # 分钟
-                estimated_cost = direct_distance * 0.8
-                
-                simulated_route = {
-                    'path': [
-                        {'id': origin_node.id, 'name': origin_node.name, 'latitude': origin_node.latitude, 'longitude': origin_node.longitude},
-                        {'id': dest_node.id, 'name': dest_node.name, 'latitude': dest_node.latitude, 'longitude': dest_node.longitude}
-                    ],
-                    'objectives': {
-                        'distance': round(direct_distance, 1),
-                        'time': round(estimated_time, 1),
-                        'cost': round(estimated_cost, 1)
-                    },
-                    'algorithm': 'direct',
-                    'is_simulated': True
-                }
-                unique_routes.append(simulated_route)
-                print(f"[多目标优化] 无直接路径，生成模拟路线: {direct_distance:.1f}km")
+                unique_routes.extend(_build_specified_od_route_candidates(origin_node, dest_node))
+                print(f"[多目标优化] 无图路径，生成 {len(unique_routes)} 条指定 OD 候选路线")
         
         # 添加路况和天气因素
         unique_routes = _enhance_routes_with_context(unique_routes, origin_id, destination_id)
+        truth_meta = _truth_meta_from_routes(unique_routes)
         
         # 执行多目标优化
         optimizer = get_multi_objective_optimizer()
         
         if algorithm == 'weighted_sum':
             result = optimizer.optimize_weighted_sum(unique_routes, weights)
+            front_quality = _front_quality_for_route_count(len(unique_routes), 1 if result.success else 0)
+            recommendations = _attach_truth_to_recommendations([{
+                'type': 'weighted_best',
+                'title': '加权最优方案',
+                'description': optimizer._generate_description(result),
+                'path': result.path,
+                'objectives': result.objectives,
+                'score': result.weighted_score
+            }] if result.success else [], truth_meta)
+            recommendations = [
+                _attach_route_candidate_metadata(item, unique_routes)
+                for item in recommendations
+            ]
+            recommendations = _attach_explanations_to_recommendations(
+                recommendations,
+                unique_routes,
+                truth_meta,
+                front_quality,
+                weights,
+            )
             # 统一返回格式
             return jsonify({
                 'success': result.success,
-                'recommendations': [{
-                    'type': 'weighted_best',
-                    'title': '加权最优方案',
-                    'description': optimizer._generate_description(result),
-                    'path': result.path,
-                    'objectives': result.objectives,
-                    'score': result.weighted_score
-                }] if result.success else [],
-                'algorithm': result.algorithm
+                'recommendations': recommendations,
+                'algorithm': result.algorithm,
+                'total_routes': len(unique_routes),
+                'front_quality': front_quality,
+                'pareto_summary': {
+                    'front_quality': front_quality,
+                    'pareto_count': 1 if result.success else 0,
+                    'total_routes': len(unique_routes),
+                },
+                **truth_meta,
             })
         
         elif algorithm == 'pareto':
             pareto_front = optimizer.find_pareto_front(unique_routes)
+            front_quality = _front_quality_for_route_count(len(unique_routes), len(pareto_front))
             # 统一返回格式
             recommendations = []
             for i, r in enumerate(pareto_front[:5]):
-                recommendations.append({
+                recommendation = {
                     'type': 'pareto',
                     'title': f'均衡方案 {i + 1}',
                     'description': optimizer._generate_description(r),
@@ -441,16 +591,59 @@ def optimize_route():
                     'rank': r.rank,
                     # Infinity 无法被 JSON 序列化，改为很大的数字
                     'crowding_distance': 9999 if r.crowding_distance == float('inf') else r.crowding_distance
-                })
+                }
+                recommendations.append(_attach_route_candidate_metadata(recommendation, unique_routes))
+            recommendations = _attach_truth_to_recommendations(recommendations, truth_meta)
+            recommendations = _attach_explanations_to_recommendations(
+                recommendations,
+                unique_routes,
+                truth_meta,
+                front_quality,
+                weights,
+            )
             return jsonify({
                 'success': True,
                 'recommendations': recommendations,
                 'pareto_count': len(pareto_front),
-                'algorithm': 'pareto'
+                'total_routes': len(unique_routes),
+                'algorithm': 'pareto',
+                'front_quality': front_quality,
+                'pareto_summary': {
+                    'front_quality': front_quality,
+                    'pareto_count': len(pareto_front),
+                    'total_routes': len(unique_routes),
+                },
+                **truth_meta,
             })
         
         else:  # 'all'
             recommendations = optimizer.generate_recommendations(unique_routes, weights)
+            recommendations['recommendations'] = _attach_truth_to_recommendations(
+                recommendations.get('recommendations', []),
+                truth_meta,
+            )
+            recommendations['recommendations'] = [
+                _attach_route_candidate_metadata(item, unique_routes)
+                for item in recommendations['recommendations']
+            ]
+            front_quality = _front_quality_for_route_count(
+                recommendations.get('total_routes', len(unique_routes)),
+                recommendations.get('pareto_count', 0),
+            )
+            recommendations['recommendations'] = _attach_explanations_to_recommendations(
+                recommendations['recommendations'],
+                unique_routes,
+                truth_meta,
+                front_quality,
+                weights,
+            )
+            recommendations.update({
+                **truth_meta,
+                'front_quality': front_quality,
+            })
+            recommendations.setdefault('pareto_summary', {})
+            recommendations['pareto_summary']['front_quality'] = recommendations['front_quality']
+            recommendations['pareto_summary']['total_routes'] = recommendations.get('total_routes', len(unique_routes))
             return jsonify(recommendations)
     
     except Exception as e:
@@ -557,6 +750,658 @@ def _build_route_object(result, optimize_by):
         'algorithm': result.algorithm,
         'optimize_by': optimize_by
     }
+
+
+def _build_specified_od_route_candidate(origin_node, dest_node):
+    """Build a single OD candidate with explicit distance/path provenance."""
+    from app.services.precise_distance_provider import get_precise_distance_provider
+
+    provider = get_precise_distance_provider()
+    matrix_result = provider.build_distance_matrix(
+        coordinates=[
+            (float(origin_node.longitude), float(origin_node.latitude)),
+            (float(dest_node.longitude), float(dest_node.latitude)),
+        ],
+        node_ids=[origin_node.id, dest_node.id],
+        strategy=0,
+        use_amap=True,
+    )
+
+    distance_km = float(matrix_result.distance_matrix_km[0][1])
+    duration_min = float(matrix_result.duration_matrix_min[0][1])
+    precision = matrix_result.precision or {}
+    cache_stats = matrix_result.cache_stats or {}
+    metadata = matrix_result.metadata or {}
+    source_summary = matrix_result.source_summary or {}
+    exact_count = int(precision.get('exact_count', 0) or 0)
+    approx_count = int(precision.get('approx_count', 0) or 0)
+    fallback_reason = metadata.get('fallback_reason')
+    if not fallback_reason and exact_count == 0 and approx_count > 0:
+        fallback_reason = 'precise_distance_provider_returned_approximate_cache_without_exact_amap_distance'
+
+    authenticity_level = 'B' if exact_count > 0 else 'C'
+    if fallback_reason:
+        authenticity_level = 'C'
+
+    return {
+        'route_candidate_id': 'specified-od-projection-0',
+        'path': [_node_route_payload(origin_node), _node_route_payload(dest_node)],
+        'objectives': {
+            'distance': round(distance_km, 2),
+            'time': round(duration_min, 1),
+            'cost': round(distance_km * 0.8, 2),
+        },
+        'algorithm': 'specified_origin_destination',
+        'is_projection': True,
+        'data_source': 'postgres_nodes',
+        'distance_source': 'precise_distance_provider',
+        'path_source': 'specified_origin_destination',
+        'authenticity_level': authenticity_level,
+        'fallback_reason': fallback_reason,
+        'distance_precision': precision,
+        'distance_cache_stats': cache_stats,
+        'source_summary': source_summary,
+        'distance_metadata': {
+            **metadata,
+            'distance_source': 'precise_distance_provider',
+            'path_source': 'specified_origin_destination',
+            'authenticity_level': authenticity_level,
+            'fallback_reason': fallback_reason,
+            'distance_cache_stats': cache_stats,
+        },
+    }
+
+
+def _build_specified_od_route_candidates(origin_node, dest_node):
+    """Build real OD route alternatives, falling back to one explicit projection.
+
+    Candidate generation is deliberately source-first: AMap driving routes are
+    treated as path candidates, while the precise distance provider is only the
+    fallback single-candidate projection when route alternatives are unavailable.
+    """
+    candidates = _build_amap_route_candidates(origin_node, dest_node)
+    if candidates:
+        return candidates
+    return [_build_specified_od_route_candidate(origin_node, dest_node)]
+
+
+def _build_amap_route_candidates(origin_node, dest_node):
+    from app.services.amap_service import get_amap_service
+
+    origin = (float(origin_node.longitude), float(origin_node.latitude))
+    destination = (float(dest_node.longitude), float(dest_node.latitude))
+    amap_service = get_amap_service()
+
+    try:
+        result = amap_service.multi_route(origin, destination)
+    except Exception as exc:
+        result = {
+            'success': False,
+            'provider': 'amap',
+            'provider_status': 'degraded',
+            'fallback_reason': f'amap_multi_route_error:{exc}',
+            'routes': [],
+        }
+
+    candidates = []
+    seen = set()
+    raw_routes = result.get('routes', []) or []
+    if result.get('success') and raw_routes:
+        for index, route in enumerate(raw_routes):
+            candidate = _amap_route_to_candidate(
+                origin_node,
+                dest_node,
+                route,
+                route_index=route.get('route_index', index),
+                candidate_id_prefix='amap-route',
+                generation_source='amap_multi_route',
+                provider=result.get('provider') or 'amap',
+                provider_status=result.get('provider_status') or 'ok',
+                fallback_reason=result.get('fallback_reason'),
+                raw_candidate_count=len(raw_routes),
+                register_api_call=index == 0,
+            )
+            _append_unique_route_candidate(candidates, candidate, seen)
+
+    if result.get('success') and raw_routes and len(candidates) < 3:
+        _extend_with_amap_strategy_candidates(
+            candidates,
+            seen,
+            amap_service,
+            origin_node,
+            dest_node,
+            origin,
+            destination,
+            min_candidates=3,
+        )
+
+    return candidates
+
+
+def _extend_with_amap_strategy_candidates(
+    candidates,
+    seen,
+    amap_service,
+    origin_node,
+    dest_node,
+    origin,
+    destination,
+    min_candidates=3,
+):
+    strategies = [
+        (0, '速度最快'),
+        (1, '费用优先'),
+        (2, '距离优先'),
+        (4, '躲避拥堵'),
+        (7, '躲避收费和不走高速'),
+        (9, '躲避收费和不走高速且躲避拥堵'),
+    ]
+
+    for strategy, strategy_label in strategies:
+        if len(candidates) >= min_candidates:
+            break
+        try:
+            route_result = amap_service.driving_route(
+                origin,
+                destination,
+                strategy=strategy,
+                show_traffic=True,
+            )
+        except Exception:
+            continue
+
+        if not getattr(route_result, 'success', False):
+            continue
+
+        route = {
+            'distance': route_result.distance,
+            'duration': route_result.duration,
+            'tolls': route_result.tolls,
+            'toll_distance': route_result.toll_distance,
+            'strategy': strategy_label,
+            'main_roads': _main_roads_from_steps(route_result.steps or []),
+            'polyline': route_result.polyline or [],
+            'traffic_info': route_result.traffic_info or {},
+        }
+        candidate = _amap_route_to_candidate(
+            origin_node,
+            dest_node,
+            route,
+            route_index=strategy,
+            candidate_id_prefix='amap-strategy',
+            generation_source='amap_strategy_route',
+            provider=getattr(route_result, 'provider', 'amap') or 'amap',
+            provider_status=getattr(route_result, 'provider_status', 'ok') or 'ok',
+            fallback_reason=getattr(route_result, 'fallback_reason', None),
+            raw_candidate_count=1,
+            register_api_call=True,
+        )
+        _append_unique_route_candidate(candidates, candidate, seen)
+
+
+def _amap_route_to_candidate(
+    origin_node,
+    dest_node,
+    route,
+    route_index,
+    candidate_id_prefix,
+    generation_source,
+    provider,
+    provider_status,
+    fallback_reason,
+    raw_candidate_count,
+    register_api_call,
+):
+    distance_m = float(route.get('distance') or 0)
+    duration_s = float(route.get('duration') or 0)
+    if distance_m <= 0 or duration_s <= 0:
+        return None
+
+    distance_km = round(distance_m / 1000.0, 2)
+    duration_min = round(duration_s / 60.0, 1)
+    tolls = float(route.get('tolls') or 0)
+    strategy = route.get('strategy')
+    polyline = route.get('polyline') or []
+    traffic_score = _traffic_score_from_route(route)
+
+    return {
+        'route_candidate_id': f'{candidate_id_prefix}-{route_index}',
+        'path': [_node_route_payload(origin_node), _node_route_payload(dest_node)],
+        'objectives': {
+            'distance': distance_km,
+            'time': duration_min,
+            'cost': round(distance_km * 0.8 + tolls, 2),
+            'traffic': traffic_score,
+            'weather_risk': 10,
+        },
+        'algorithm': generation_source,
+        'optimize_by': 'route_alternative',
+        'data_source': 'postgres_nodes',
+        'distance_source': 'amap_driving_route',
+        'path_source': 'amap_driving_route',
+        'authenticity_level': 'B',
+        'fallback_reason': fallback_reason,
+        'route_strategy': strategy,
+        'route_index': route_index,
+        'tolls': tolls,
+        'toll_distance_km': round(float(route.get('toll_distance') or 0) / 1000.0, 2),
+        'main_roads': route.get('main_roads') or [],
+        'polyline': polyline,
+        'distance_precision': {
+            'exact_count': 1,
+            'approx_count': 0,
+            'total_count': 1,
+            'fresh_amap_count': 1,
+            'exact_cache_count': 0,
+            'approx_cache_count': 0,
+            'fallback_count': 0,
+        },
+        'distance_cache_stats': {
+            'cache_hits': 0,
+            'amap_calls': 1 if register_api_call else 0,
+            'haversine_fallbacks': 0,
+            'total_pairs': 1,
+            'amap_attempted_pairs': 1 if register_api_call else 0,
+            'amap_successes': 1,
+            'amap_route_attempted_pairs': 1 if register_api_call else 0,
+            'amap_route_successes': 1,
+            'amap_rejected_pairs': 0,
+            'cache_rejected_pairs': 0,
+        },
+        'source_summary': {
+            'amap_route': 1,
+        },
+        'candidate_generation': {
+            'source': generation_source,
+            'provider': provider,
+            'provider_status': provider_status,
+            'route_index': route_index,
+            'strategy': strategy,
+            'raw_candidate_count': raw_candidate_count,
+        },
+        'distance_metadata': {
+            'provider': provider,
+            'provider_status': provider_status,
+            'fallback_reason': fallback_reason,
+            'distance_source': 'amap_driving_route',
+            'path_source': 'amap_driving_route',
+            'authenticity_level': 'B',
+            'route_strategy': strategy,
+            'route_index': route_index,
+            'main_roads': route.get('main_roads') or [],
+            'has_polyline': bool(polyline),
+        },
+    }
+
+
+def _append_unique_route_candidate(candidates, candidate, seen):
+    if not candidate:
+        return False
+    objectives = candidate.get('objectives') or {}
+    signature = (
+        round(float(objectives.get('distance') or 0), 1),
+        round(float(objectives.get('time') or 0), 1),
+        round(float(candidate.get('tolls') or 0), 1),
+        str(candidate.get('route_strategy')),
+    )
+    if signature in seen:
+        return False
+    seen.add(signature)
+    candidates.append(candidate)
+    return True
+
+
+def _main_roads_from_steps(steps):
+    roads = []
+    for step in steps:
+        road = step.get('road') if isinstance(step, dict) else None
+        if road and road not in roads:
+            roads.append(road)
+    return roads[:5]
+
+
+def _traffic_score_from_route(route):
+    traffic_info = route.get('traffic_info') or {}
+    congestion_ratio = traffic_info.get('congestion_ratio')
+    if congestion_ratio is None:
+        return 70
+    try:
+        return max(0, min(100, round(100 - float(congestion_ratio) * 100, 1)))
+    except (TypeError, ValueError):
+        return 70
+
+
+def _truth_meta_from_routes(routes):
+    route = next((item for item in routes if item.get('distance_source') or item.get('path_source')), None)
+    if not route:
+        return {
+            'data_source': 'route_graph',
+            'distance_source': 'route_graph',
+            'path_source': 'path_algorithm_graph',
+            'authenticity_level': 'C',
+            'fallback_reason': 'legacy_path_algorithm_result_without_unified_truth_contract',
+        }
+
+    candidate_generation = _candidate_generation_summary(routes)
+    return {
+        'data_source': route.get('data_source') or 'postgres_nodes',
+        'distance_source': route.get('distance_source'),
+        'path_source': route.get('path_source'),
+        'authenticity_level': route.get('authenticity_level'),
+        'fallback_reason': route.get('fallback_reason'),
+        'distance_precision': route.get('distance_precision'),
+        'distance_cache_stats': _sum_numeric_dicts([item.get('distance_cache_stats') for item in routes]),
+        'source_summary': _sum_numeric_dicts([item.get('source_summary') for item in routes]),
+        'distance_metadata': route.get('distance_metadata'),
+        'candidate_generation': candidate_generation,
+    }
+
+
+def _attach_truth_to_recommendations(recommendations, truth_meta):
+    enriched = []
+    for recommendation in recommendations:
+        item = dict(recommendation)
+        for key in [
+            'data_source',
+            'distance_source',
+            'path_source',
+            'authenticity_level',
+            'fallback_reason',
+            'distance_precision',
+            'distance_cache_stats',
+            'source_summary',
+            'distance_metadata',
+            'candidate_generation',
+        ]:
+            if truth_meta.get(key) is not None:
+                item.setdefault(key, truth_meta.get(key))
+        enriched.append(item)
+    return enriched
+
+
+def _attach_explanations_to_recommendations(
+    recommendations,
+    routes,
+    truth_meta,
+    front_quality,
+    weights=None,
+):
+    context = _build_recommendation_explanation_context(routes, truth_meta, front_quality, weights)
+    enriched = []
+    for index, recommendation in enumerate(recommendations):
+        item = dict(recommendation)
+        match = _find_matching_route_candidate(item, routes) or item
+        objectives = item.get('objectives') or match.get('objectives') or {}
+        objective_ranks = _objective_ranks_for(objectives, context)
+        tradeoff_summary = _build_tradeoff_summary(item, objective_ranks, context)
+        item.setdefault(
+            'recommendation_reason',
+            _build_recommendation_reason(item, objective_ranks, tradeoff_summary, context, index),
+        )
+        item.setdefault('recommendation_reason_source', 'backend_multi_objective_governance')
+        item.setdefault('tradeoff_summary', tradeoff_summary)
+        item.setdefault('selection_metrics', {
+            'candidate_count': context['candidate_count'],
+            'front_quality': front_quality,
+            'distance_source': truth_meta.get('distance_source'),
+            'path_source': truth_meta.get('path_source'),
+            'authenticity_level': truth_meta.get('authenticity_level'),
+            'fallback_reason': truth_meta.get('fallback_reason'),
+            'objective_ranks': objective_ranks,
+            'best_objectives': context['best_objectives'],
+            'weights_used': context['weights_used'],
+            'route_candidate_id': item.get('route_candidate_id') or match.get('route_candidate_id'),
+            'route_strategy': item.get('route_strategy') or match.get('route_strategy'),
+            'source_counts': (truth_meta.get('candidate_generation') or {}).get('source_counts', {}),
+        })
+        enriched.append(item)
+    return enriched
+
+
+def _build_recommendation_explanation_context(routes, truth_meta, front_quality, weights=None):
+    objective_configs = MultiObjectiveOptimizer.OBJECTIVES
+    route_objectives = [
+        route.get('objectives') or {}
+        for route in routes
+        if isinstance(route.get('objectives'), dict)
+    ]
+    best_objectives = {}
+    objective_values = {}
+    for obj_name, config in objective_configs.items():
+        values = [
+            float(objectives[obj_name])
+            for objectives in route_objectives
+            if obj_name in objectives and _is_number(objectives[obj_name])
+        ]
+        if not values:
+            continue
+        best_value = min(values) if config.minimize else max(values)
+        worst_value = max(values) if config.minimize else min(values)
+        best_objectives[obj_name] = {
+            'label': config.display_name,
+            'unit': config.unit,
+            'best_value': round(best_value, 2),
+            'worst_value': round(worst_value, 2),
+            'minimize': config.minimize,
+        }
+        objective_values[obj_name] = values
+
+    candidate_generation = truth_meta.get('candidate_generation') or {}
+    return {
+        'candidate_count': int(candidate_generation.get('candidate_count') or len(routes) or 0),
+        'front_quality': front_quality,
+        'best_objectives': best_objectives,
+        'objective_values': objective_values,
+        'weights_used': _normalize_explanation_weights(weights),
+    }
+
+
+def _objective_ranks_for(objectives, context):
+    ranks = {}
+    objective_configs = MultiObjectiveOptimizer.OBJECTIVES
+    for obj_name, value in (objectives or {}).items():
+        if obj_name not in objective_configs or not _is_number(value):
+            continue
+        values = context['objective_values'].get(obj_name) or []
+        if not values:
+            continue
+        config = objective_configs[obj_name]
+        unique_values = sorted(set(values), reverse=not config.minimize)
+        numeric_value = float(value)
+        rank = 1
+        for index, candidate_value in enumerate(unique_values):
+            if abs(candidate_value - numeric_value) <= 1e-9:
+                rank = index + 1
+                break
+        ranks[obj_name] = {
+            'rank': rank,
+            'total': len(unique_values),
+            'value': round(numeric_value, 2),
+            'label': config.display_name,
+            'unit': config.unit,
+            'minimize': config.minimize,
+        }
+    return ranks
+
+
+def _build_tradeoff_summary(recommendation, objective_ranks, context):
+    strengths = []
+    compromises = []
+    candidate_count = max(int(context.get('candidate_count') or 0), 1)
+
+    if candidate_count == 1:
+        strengths.append('唯一真实候选，作为指定起终点代表方案')
+    for obj_name, rank_info in objective_ranks.items():
+        label = rank_info.get('label') or obj_name
+        rank = int(rank_info.get('rank') or 0)
+        total = int(rank_info.get('total') or candidate_count)
+        if rank == 1:
+            strengths.append(f'{label}当前最优')
+        elif total > 1:
+            compromises.append(f'{label}排名第{rank}/{total}')
+
+    if recommendation.get('type') == 'weighted_best':
+        strengths.insert(0, '按当前权重综合得分最低')
+    elif recommendation.get('type') == 'pareto':
+        strengths.insert(0, '非支配候选，代表一种真实路线权衡')
+    elif recommendation.get('type') == 'single_objective':
+        objective = recommendation.get('objective')
+        label = objective_ranks.get(objective, {}).get('label') if objective else None
+        strengths.insert(0, f'{label or recommendation.get("title") or "单目标"}表现最优')
+
+    return {
+        'strengths': _dedupe_text(strengths),
+        'compromises': _dedupe_text(compromises),
+        'front_quality': context.get('front_quality'),
+    }
+
+
+def _build_recommendation_reason(recommendation, objective_ranks, tradeoff_summary, context, index):
+    title = recommendation.get('title') or f'方案 {index + 1}'
+    strengths = tradeoff_summary.get('strengths') or []
+    compromises = tradeoff_summary.get('compromises') or []
+    front_quality = context.get('front_quality')
+    candidate_count = context.get('candidate_count')
+    reason_parts = [f'{title}基于{candidate_count}条真实候选路线评估']
+    if strengths:
+        reason_parts.append('优势：' + '、'.join(strengths[:3]))
+    if compromises:
+        reason_parts.append('取舍：' + '、'.join(compromises[:3]))
+    if objective_ranks:
+        rank_bits = [
+            f"{info.get('label')}第{info.get('rank')}/{info.get('total')}"
+            for info in objective_ranks.values()
+            if info.get('rank') is not None
+        ]
+        if rank_bits:
+            reason_parts.append('排名：' + '，'.join(rank_bits[:4]))
+    reason_parts.append(f'前沿质量：{front_quality}')
+    return '；'.join(reason_parts)
+
+
+def _normalize_explanation_weights(weights):
+    if not weights:
+        return {name: config.default_weight for name, config in MultiObjectiveOptimizer.OBJECTIVES.items()}
+    total = sum(float(value) for value in weights.values() if _is_number(value))
+    if total <= 0:
+        return {name: config.default_weight for name, config in MultiObjectiveOptimizer.OBJECTIVES.items()}
+    return {
+        key: round(float(value) / total, 4)
+        for key, value in weights.items()
+        if _is_number(value)
+    }
+
+
+def _is_number(value):
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _dedupe_text(items):
+    seen = set()
+    result = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _attach_route_candidate_metadata(recommendation, routes):
+    item = dict(recommendation)
+    match = _find_matching_route_candidate(item, routes)
+    if not match:
+        return item
+
+    for key in [
+        'route_candidate_id',
+        'route_strategy',
+        'route_index',
+        'tolls',
+        'toll_distance_km',
+        'main_roads',
+        'polyline',
+    ]:
+        if match.get(key) is not None:
+            item.setdefault(key, match.get(key))
+    return item
+
+
+def _find_matching_route_candidate(recommendation, routes):
+    rec_path = recommendation.get('path')
+    rec_objectives = recommendation.get('objectives') or {}
+    for route in routes:
+        if rec_path == route.get('path') and _objectives_match(rec_objectives, route.get('objectives') or {}):
+            return route
+
+    for route in routes:
+        if _objectives_match(rec_objectives, route.get('objectives') or {}):
+            return route
+
+    return None
+
+
+def _objectives_match(left, right):
+    if not left or not right:
+        return False
+    for key in ['distance', 'time', 'cost']:
+        if key in left and key in right:
+            try:
+                if abs(float(left[key]) - float(right[key])) > 0.01:
+                    return False
+            except (TypeError, ValueError):
+                return False
+    return True
+
+
+def _sum_numeric_dicts(items):
+    summary = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if isinstance(value, (int, float)):
+                summary[key] = summary.get(key, 0) + value
+    return summary
+
+
+def _candidate_generation_summary(routes):
+    if not routes:
+        return {
+            'source': 'none',
+            'candidate_count': 0,
+            'front_quality': 'empty_front',
+        }
+
+    source_counts = {}
+    strategies = []
+    for route in routes:
+        generation = route.get('candidate_generation') or {}
+        source = generation.get('source') or route.get('algorithm') or 'unknown'
+        source_counts[source] = source_counts.get(source, 0) + 1
+        strategy = route.get('route_strategy')
+        if strategy is not None and strategy not in strategies:
+            strategies.append(strategy)
+
+    return {
+        'source': next(iter(source_counts.keys())),
+        'source_counts': source_counts,
+        'candidate_count': len(routes),
+        'front_quality': _front_quality_for_route_count(len(routes), len(routes)),
+        'strategies': strategies,
+    }
+
+
+def _front_quality_for_route_count(route_count, pareto_count):
+    if route_count <= 1:
+        return 'single_solution_projection'
+    if pareto_count <= 1:
+        return 'degenerate_front'
+    return 'reported_front'
 
 
 def _enhance_routes_with_context(routes, origin_id, destination_id):

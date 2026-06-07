@@ -13,6 +13,59 @@ from app.utils.rate_limiter import rate_limit, RateLimits
 dispatch_bp = Blueprint('dispatch', __name__)
 
 
+SMART_DISPATCH_TRUTH_CONTRACT = {
+    'data_source': 'postgres_orders_vehicles_nodes',
+    'distance_source': 'haversine_legacy_dispatch',
+    'path_source': 'dispatch_assignment_sequence',
+    'authenticity_level': 'C',
+    'fallback_reason': (
+        'smart_dispatch_legacy_service_uses_haversine_distance_matrix; '
+        'not_yet_precise_road_distance_or_turn_by_turn_path'
+    ),
+}
+
+
+def _normalize_smart_dispatch_summary(summary, plans, unassigned_orders):
+    """Keep legacy summary keys while adding frontend display and truth-contract keys."""
+    summary = dict(summary or {})
+    assigned_orders = sum(len(getattr(plan, 'orders', []) or []) for plan in plans)
+    if assigned_orders == 0:
+        assigned_orders = summary.get('assigned_orders', 0)
+
+    unassigned_count = len(unassigned_orders or [])
+    if unassigned_count == 0:
+        unassigned_count = summary.get('unassigned_orders', 0)
+
+    vehicles_used = len(plans or [])
+    if vehicles_used == 0:
+        vehicles_used = summary.get('vehicles_used', 0)
+
+    total_distance = round(float(summary.get('total_distance', 0) or 0), 2)
+    total_duration = round(float(summary.get('total_duration', 0) or 0), 2)
+    total_cost = round(float(summary.get('total_cost', 0) or 0), 2)
+    avg_cost = summary.get('avg_cost_per_order')
+    if avg_cost is None:
+        avg_cost = round(total_cost / assigned_orders, 2) if assigned_orders else 0
+
+    summary.update({
+        'assigned_orders': assigned_orders,
+        'unassigned_orders': unassigned_count,
+        'vehicles_used': vehicles_used,
+        'total_distance': total_distance,
+        'total_duration': total_duration,
+        'total_cost': total_cost,
+        'avg_cost_per_order': round(float(avg_cost or 0), 2),
+        'total_orders_assigned': assigned_orders,
+        'total_orders_unassigned': unassigned_count,
+        'total_vehicles_used': vehicles_used,
+        'total_distance_km': total_distance,
+        'total_duration_min': total_duration,
+        'average_cost_per_order': round(float(avg_cost or 0), 2),
+        **SMART_DISPATCH_TRUTH_CONTRACT,
+    })
+    return summary
+
+
 @dispatch_bp.route('/auto', methods=['POST'])
 @jwt_required()
 @rate_limit(max_requests=15, window_seconds=60, key_func=lambda: f"auto_dispatch:{get_jwt_identity()}")
@@ -260,6 +313,11 @@ def smart_dispatch():
         )
         
         if result.success:
+            summary = _normalize_smart_dispatch_summary(
+                result.summary,
+                result.plans,
+                result.unassigned_orders,
+            )
             return jsonify({
                 'success': True,
                 'plans': [
@@ -283,10 +341,11 @@ def smart_dispatch():
                     for p in result.plans
                 ],
                 'unassigned_orders': result.unassigned_orders,
-                'summary': result.summary,
+                'summary': summary,
                 'algorithm': result.algorithm,
                 'generations': result.generations,
-                'convergence_score': result.convergence_score
+                'convergence_score': result.convergence_score,
+                **SMART_DISPATCH_TRUTH_CONTRACT,
             })
         else:
             return jsonify({'success': False, 'error': result.error}), 400

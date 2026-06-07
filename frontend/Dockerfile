@@ -24,9 +24,6 @@ RUN npm run build
 # 阶段 2: 生产环境（Nginx）
 FROM nginx:alpine
 
-# 安装 curl 用于健康检查
-RUN apk add --no-cache curl
-
 # 复制构建产物
 COPY --from=builder /app/dist /usr/share/nginx/html
 
@@ -38,7 +35,7 @@ EXPOSE 80
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost/ || exit 1
+    CMD nginx -t || exit 1
 
 # 启动 nginx
 CMD ["nginx", "-g", "daemon off;"]

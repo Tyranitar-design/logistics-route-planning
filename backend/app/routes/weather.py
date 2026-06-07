@@ -4,11 +4,70 @@
 天气相关路由
 """
 
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
 from app.services.weather_service import get_weather_service
 
 weather_bp = Blueprint('weather', __name__)
+
+
+def _build_weather_fallback(city: str, reason: str, node=None, resolved_city_confidence: str = None):
+    transport_impact = {
+        'impact_level': '轻微影响',
+        'speed_reduction': 0.0,
+        'delay_risk': 0.1,
+        'safety_warning': '天气服务暂不可用，请调度员结合当地实时天气人工确认。',
+        'suggestions': [
+            '天气接口处于降级模式，出车前请人工确认目的地天气',
+            '保持常规安全车距，必要时预留缓冲时间',
+        ],
+    }
+    data = {
+        'province': city,
+        'city': city,
+        'adcode': '',
+        'weather': '服务降级',
+        'temperature': '--',
+        'wind_direction': '--',
+        'wind_power': '--',
+        'humidity': '--',
+        'report_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'forecast': None,
+        'source': 'fallback',
+        'note': reason,
+        'provider': 'amap',
+        'provider_status': 'degraded',
+        'degraded': True,
+        'fallback_reason': reason,
+        'transport_impact': transport_impact,
+        'authenticity': {
+            'mode': 'prefer_real',
+            'level': 'C',
+            'is_strict': False,
+            'allow_fallback': True,
+            'has_real_distance': False,
+            'has_real_duration': False,
+            'used_fallback': True,
+            'used_simulation': False,
+            'distance_source': None,
+            'duration_source': None,
+            'exact_ratio': 0.0,
+            'approx_ratio': 1.0,
+            'message': '天气接口当前处于降级模式，未获取到高德实时天气结果。',
+        },
+    }
+    if node is not None:
+        data.update({
+            'node_id': node.id,
+            'node_name': node.name,
+            'resolved_city': city,
+            'resolved_city_confidence': resolved_city_confidence,
+        })
+    return {
+        'success': True,
+        'data': data,
+    }
 
 
 @weather_bp.route('/now', methods=['GET'])
@@ -47,12 +106,13 @@ def get_weather_now():
         service = get_weather_service()
         result = service.get_weather_now(city)
         
+        if not result.get('success'):
+            return jsonify(_build_weather_fallback(city, result.get('error') or 'WEATHER_PROVIDER_UNAVAILABLE'))
+
         return jsonify(result)
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        city = request.args.get('city') or '未知城市'
+        return jsonify(_build_weather_fallback(city, str(e)))
 
 
 @weather_bp.route('/forecast', methods=['GET'])
@@ -95,13 +155,51 @@ def get_weather_forecast():
         
         service = get_weather_service()
         result = service.get_weather_forecast(city)
+
+        if not result.get('success'):
+            return jsonify({
+                'success': True,
+                'data': {
+                    'city': city,
+                    'forecast': [],
+                    'provider': 'amap',
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': result.get('fallback_reason') or result.get('error') or 'WEATHER_PROVIDER_UNAVAILABLE',
+                    'source': 'fallback',
+                    'authenticity': {
+                        'mode': 'prefer_real',
+                        'level': 'C',
+                        'is_strict': False,
+                        'allow_fallback': True,
+                        'has_real_distance': False,
+                        'has_real_duration': False,
+                        'used_fallback': True,
+                        'used_simulation': False,
+                        'distance_source': None,
+                        'duration_source': None,
+                        'exact_ratio': 0.0,
+                        'approx_ratio': 1.0,
+                        'message': '天气预报接口当前处于降级模式，未获取到高德预报结果。',
+                    },
+                }
+            })
         
         return jsonify(result)
     except Exception as e:
+        city = request.args.get('city') or '未知城市'
         return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+            'success': True,
+            'data': {
+                'city': city,
+                'forecast': [],
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
+                'source': 'fallback',
+            }
+        })
 
 
 @weather_bp.route('/impact', methods=['GET'])
@@ -232,8 +330,12 @@ def get_node_weather(node_id):
                 'error': '节点不存在'
             }), 404
         
+        resolved_city_confidence = 'direct'
+
         # 优先使用城市名，其次使用省份
         city = node.city or node.province
+        if not node.city and node.province:
+            resolved_city_confidence = 'province'
         
         # 如果没有城市信息，尝试从名称或地址中提取
         if not city:
@@ -255,6 +357,7 @@ def get_node_weather(node_id):
             for c in city_patterns:
                 if c in name or c in address:
                     city = c
+                    resolved_city_confidence = 'name_or_address'
                     break
         
         # 如果还是没有，使用地址中的省份信息
@@ -263,6 +366,7 @@ def get_node_weather(node_id):
             province_match = re.search(r'([\u4e00-\u9fa5]+)(?:省|自治区)', node.address)
             if province_match:
                 city = province_match.group(1)
+                resolved_city_confidence = 'province_from_address'
         
         # 最后的回退：根据经纬度推断城市（简单的经纬度范围判断）
         if not city and node.longitude and node.latitude:
@@ -271,16 +375,22 @@ def get_node_weather(node_id):
             # 简单的城市经纬度范围判断
             if 39.4 <= lat <= 41.0 and 115.7 <= lng <= 117.4:
                 city = '北京'
+                resolved_city_confidence = 'geo_inference'
             elif 30.6 <= lat <= 31.9 and 120.8 <= lng <= 122.2:
                 city = '上海'
+                resolved_city_confidence = 'geo_inference'
             elif 22.4 <= lat <= 23.5 and 113.0 <= lng <= 114.5:
                 city = '广州'
+                resolved_city_confidence = 'geo_inference'
             elif 22.4 <= lat <= 22.9 and 113.7 <= lng <= 114.7:
                 city = '深圳'
+                resolved_city_confidence = 'geo_inference'
             elif 29.9 <= lat <= 30.6 and 119.9 <= lng <= 120.8:
                 city = '杭州'
+                resolved_city_confidence = 'geo_inference'
             elif 30.0 <= lat <= 32.5 and 118.0 <= lng <= 119.5:
                 city = '南京'
+                resolved_city_confidence = 'geo_inference'
         
         if not city:
             return jsonify({
@@ -306,13 +416,41 @@ def get_node_weather(node_id):
                     'node_id': node_id,
                     'node_name': node.name,
                     'resolved_city': city,  # 返回解析出的城市
+                    'resolved_city_confidence': resolved_city_confidence,
                     'transport_impact': impact.to_dict()
                 }
             })
         else:
-            return jsonify(weather_result)
+            return jsonify(_build_weather_fallback(
+                city,
+                weather_result.get('fallback_reason') or weather_result.get('error') or 'WEATHER_PROVIDER_UNAVAILABLE',
+                node,
+                resolved_city_confidence,
+            ))
     except Exception as e:
         return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+            'success': True,
+            'data': {
+                'node_id': node_id,
+                'node_name': None,
+                'city': '未知城市',
+                'weather': '服务降级',
+                'temperature': '--',
+                'wind_direction': '--',
+                'wind_power': '--',
+                'humidity': '--',
+                'report_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
+                'source': 'fallback',
+                'transport_impact': {
+                    'impact_level': '轻微影响',
+                    'speed_reduction': 0.0,
+                    'delay_risk': 0.1,
+                    'safety_warning': '天气服务暂不可用，请人工确认。',
+                    'suggestions': ['天气接口处于降级模式，请人工确认当地天气'],
+                },
+            }
+        })

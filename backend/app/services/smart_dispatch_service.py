@@ -20,6 +20,9 @@ from app.services.path_algorithm import get_path_service
 
 logger = logging.getLogger(__name__)
 
+DISPATCHABLE_ORDER_STATUSES = ('pending', 'assigned', '待调度', '待配送', '待分配')
+AVAILABLE_VEHICLE_STATUSES = ('available', 'idle', '空闲')
+
 
 @dataclass
 class DispatchPlan:
@@ -548,15 +551,17 @@ class GeneticAlgorithmOptimizer:
         total_duration = sum(p.total_duration for p in plans)
         total_cost = sum(p.total_cost for p in plans)
         
+        assigned_orders = sum(len(p.orders) for p in plans)
+
         return {
             'total_orders': len(orders),
-            'assigned_orders': len(plans),
+            'assigned_orders': assigned_orders,
             'unassigned_orders': len(unassigned),
             'vehicles_used': len(plans),
             'total_distance': round(total_distance, 2),
             'total_duration': round(total_duration, 2),
             'total_cost': round(total_cost, 2),
-            'avg_cost_per_order': round(total_cost / len(plans), 2) if plans else 0,
+            'avg_cost_per_order': round(total_cost / assigned_orders, 2) if assigned_orders else 0,
             'optimization_score': round(sum(p.score for p in plans) / len(plans), 1) if plans else 0
         }
 
@@ -593,7 +598,7 @@ class SmartDispatchService:
         """
         try:
             # 查询订单
-            query = Order.query.filter(Order.status.in_(['pending', 'assigned']))
+            query = Order.query.filter(Order.status.in_(DISPATCHABLE_ORDER_STATUSES))
             if order_ids:
                 query = query.filter(Order.id.in_(order_ids))
             orders = query.all()
@@ -610,7 +615,7 @@ class SmartDispatchService:
                 )
             
             # 查询车辆
-            v_query = Vehicle.query.filter(Vehicle.status == 'available')
+            v_query = Vehicle.query.filter(Vehicle.status.in_(AVAILABLE_VEHICLE_STATUSES))
             if vehicle_ids:
                 v_query = v_query.filter(Vehicle.id.in_(vehicle_ids))
             vehicles = v_query.all()
@@ -690,7 +695,11 @@ class SmartDispatchService:
                 node1 = nodes.get(id1)
                 node2 = nodes.get(id2)
                 
-                if node1 and node2 and node1.latitude and node2.latitude:
+                if (
+                    node1 and node2
+                    and node1.latitude and node1.longitude
+                    and node2.latitude and node2.longitude
+                ):
                     # Haversine 距离
                     R = 6371
                     lat1, lng1, lat2, lng2 = map(
@@ -763,13 +772,18 @@ class SmartDispatchService:
             
             vehicle_idx = (vehicle_idx + 1) % len(vehicles)
         
+        assigned_orders = sum(len(p.orders) for p in plans)
+        total_distance = round(sum(p.total_distance for p in plans), 2)
+        total_cost = round(sum(p.total_cost for p in plans), 2)
+
         summary = {
             'total_orders': len(orders),
-            'assigned_orders': len(plans),
+            'assigned_orders': assigned_orders,
             'unassigned_orders': len(unassigned),
             'vehicles_used': min(len(plans), len(vehicles)),
-            'total_distance': sum(p.total_distance for p in plans),
-            'total_cost': sum(p.total_cost for p in plans)
+            'total_distance': total_distance,
+            'total_cost': total_cost,
+            'avg_cost_per_order': round(total_cost / assigned_orders, 2) if assigned_orders else 0,
         }
         
         return OptimizationResult(

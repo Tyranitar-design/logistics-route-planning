@@ -1,0 +1,37 @@
+:root {
+  --cc-bg: #07111f;
+  --cc-bg-elevated: #0b1b2e;
+  --cc-bg-panel: rgba(11, 27, 46, 0.74);
+  --cc-bg-panel-strong: rgba(9, 21, 38, 0.92);
+  --cc-bg-sidebar: rgba(6, 14, 28, 0.95);
+  --cc-border: rgba(0, 212, 255, 0.18);
+  --cc-border-strong: rgba(0, 212, 255, 0.42);
+  --cc-glow: rgba(0, 212, 255, 0.24);
+  --cc-glow-soft: rgba(0, 255, 136, 0.16);
+  --cc-text-primary: #ecf7ff;
+  --cc-text-secondary: rgba(236, 247, 255, 0.72);
+  --cc-text-muted: rgba(236, 247, 255, 0.48);
+  --cc-cyan: #00d4ff;
+  --cc-teal: #11e0b7;
+  --cc-amber: #ffbf47;
+  --cc-danger: #ff5b6e;
+  --cc-success: #1ee68f;
+  --cc-shadow-panel: 0 18px 60px rgba(0, 0, 0, 0.32);
+  --cc-shadow-glow: 0 0 0 1px rgba(0, 212, 255, 0.08), 0 10px 30px rgba(0, 212, 255, 0.12);
+  --cc-radius-lg: 20px;
+  --cc-radius-md: 16px;
+  --cc-radius-sm: 12px;
+  --cc-shell-max-width: 1920px;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(0, 212, 255, 0.12), transparent 28%),
+    radial-gradient(circle at top right, rgba(17, 224, 183, 0.09), transparent 24%),
+    linear-gradient(160deg, #040b14 0%, #081322 35%, #09192d 100%);
+  color: var(--cc-text-primary);
+}

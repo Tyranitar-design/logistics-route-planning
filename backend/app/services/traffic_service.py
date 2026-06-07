@@ -6,6 +6,7 @@
 
 import requests
 import math
+import os
 from datetime import datetime
 from flask import current_app
 
@@ -14,7 +15,7 @@ class TrafficService:
     """实时路况服务"""
     
     # 高德地图 API Key
-    AMAP_KEY = 'e471e7d99965ef1f1a0d4113f580f5db'
+    AMAP_KEY = os.environ.get('AMAP_SERVICE_KEY') or os.environ.get('AMAP_WEB_KEY') or os.environ.get('AMAP_KEY', '')
     
     # 路况等级
     TRAFFIC_LEVELS = {

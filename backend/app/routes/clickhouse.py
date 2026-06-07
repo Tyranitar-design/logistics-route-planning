@@ -5,14 +5,15 @@ ClickHouse 大数据分析 API
 from flask import Blueprint, request, jsonify
 import requests
 import json
+import os
 
 ch_bp = Blueprint('clickhouse', __name__)
 
 # ClickHouse 配置
-CH_HOST = 'http://localhost:8123'
-CH_USER = 'admin'
-CH_PASSWORD = 'admin123'
-CH_DATABASE = 'logistics'
+CH_HOST = os.environ.get('CLICKHOUSE_HOST', 'http://localhost:8123')
+CH_USER = os.environ.get('CLICKHOUSE_USER', 'admin')
+CH_PASSWORD = os.environ.get('CLICKHOUSE_PASSWORD', '')
+CH_DATABASE = os.environ.get('CLICKHOUSE_DATABASE', 'logistics')
 
 
 def execute_clickhouse_query(sql):

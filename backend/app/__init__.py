@@ -72,12 +72,10 @@ def create_app(config_name='default'):
     from app.routes.multi_objective import multi_obj_bp
     from app.routes.oil_price import oil_price_bp
     from app.routes.analytics import analytics_bp
-    from app.routes.ml import register_ml_routes
     from app.routes.agile import agile_bp
     from app.routes.risk import risk_bp
     from app.routes.alert import alert_bp
     from app.routes.advanced_route import advanced_route_bp
-    from app.routes.advanced_ml import register_advanced_ml_routes
     from app.routes.pricing import register_pricing_routes
     from app.routes.inventory import register_inventory_routes
     from app.routes.multimodal import register_multimodal_routes
@@ -196,8 +194,12 @@ def create_app(config_name='default'):
     from app.routes.metrics import metrics_bp
     app.register_blueprint(metrics_bp, url_prefix='/api')
 
+    disable_ml_routes = os.environ.get('DISABLE_ML_ROUTES', '').lower() in ('1', 'true', 'yes')
+
     # 注册新功能路由
-    register_advanced_ml_routes(app)
+    if not disable_ml_routes:
+        from app.routes.advanced_ml import register_advanced_ml_routes
+        register_advanced_ml_routes(app)
     register_pricing_routes(app)
     register_inventory_routes(app)
     register_multimodal_routes(app)
@@ -208,7 +210,9 @@ def create_app(config_name='default'):
     app.register_blueprint(optimization_bp, url_prefix='/api/optimization')
 
     # 注册 ML 预测路由
-    register_ml_routes(app)
+    if not disable_ml_routes:
+        from app.routes.ml import register_ml_routes
+        register_ml_routes(app)
 
     # 注册健康检查蓝图
     from app.routes.health import health_bp

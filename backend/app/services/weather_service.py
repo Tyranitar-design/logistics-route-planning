@@ -7,6 +7,9 @@
 
 import requests
 import logging
+import socket
+import time
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -94,6 +97,7 @@ class WeatherService:
     """天气服务"""
     
     BASE_URL = "https://restapi.amap.com/v3"
+    API_HOST = "restapi.amap.com"
     
     # 天气对运输的影响配置
     WEATHER_IMPACT_CONFIG = {
@@ -133,21 +137,87 @@ class WeatherService:
     
     def __init__(self, api_key: str):
         self.api_key = api_key
+
+    def _build_authenticity(self, message: str):
+        return {
+            'mode': 'prefer_real',
+            'level': 'A',
+            'is_strict': False,
+            'allow_fallback': False,
+            'has_real_distance': False,
+            'has_real_duration': False,
+            'used_fallback': False,
+            'used_simulation': False,
+            'distance_source': None,
+            'duration_source': None,
+            'exact_ratio': 1.0,
+            'approx_ratio': 0.0,
+            'message': message,
+        }
+
+    @contextmanager
+    def _prefer_ipv4_for_amap(self):
+        original_getaddrinfo = socket.getaddrinfo
+
+        def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            records = original_getaddrinfo(host, port, family, type, proto, flags)
+            if host == self.API_HOST:
+                ipv4_records = [record for record in records if record[0] == socket.AF_INET]
+                ipv6_records = [record for record in records if record[0] == socket.AF_INET6]
+                if ipv4_records:
+                    return ipv4_records + [record for record in records if record[0] not in (socket.AF_INET, socket.AF_INET6)] + ipv6_records
+            return records
+
+        socket.getaddrinfo = getaddrinfo
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
     
     def _make_request(self, endpoint: str, params: Dict) -> Dict:
         """发送请求到高德 API"""
+        if not self.api_key:
+            return {
+                'status': '0',
+                'info': 'AMAP_KEY_MISSING',
+                'provider': 'amap',
+                'provider_status': 'unavailable',
+                'degraded': True,
+                'fallback_reason': 'AMAP_KEY_MISSING',
+            }
+
         params['key'] = self.api_key
         params['output'] = 'json'
         
         url = f"{self.BASE_URL}/{endpoint}"
         
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(f"天气 API 请求失败: {e}")
-            return {'status': '0', 'info': str(e)}
+        last_error = None
+        for attempt in range(2):
+            try:
+                with self._prefer_ipv4_for_amap():
+                    response = requests.get(url, params=params, timeout=(4, 8))
+                response.raise_for_status()
+                payload = response.json()
+                payload.setdefault('provider', 'amap')
+                payload.setdefault('provider_status', 'ok' if payload.get('status') == '1' else 'degraded')
+                payload.setdefault('degraded', payload.get('status') != '1')
+                payload.setdefault('fallback_reason', None if payload.get('status') == '1' else payload.get('info'))
+                return payload
+            except requests.RequestException as e:
+                last_error = e
+                logger.warning(f"天气 API 请求失败，第 {attempt + 1} 次: {e}")
+                if attempt == 0:
+                    time.sleep(0.3)
+
+        logger.error(f"天气 API 请求最终失败: {last_error}")
+        return {
+            'status': '0',
+            'info': str(last_error),
+            'provider': 'amap',
+            'provider_status': 'degraded',
+            'degraded': True,
+            'fallback_reason': str(last_error),
+        }
     
     def get_weather_now(self, city: str) -> Dict:
         """
@@ -169,14 +239,22 @@ class WeatherService:
         if result.get('status') != '1':
             return {
                 'success': False,
-                'error': result.get('info', '天气查询失败')
+                'error': result.get('info', '天气查询失败'),
+                'provider': 'amap',
+                'provider_status': result.get('provider_status', 'degraded'),
+                'degraded': True,
+                'fallback_reason': result.get('fallback_reason') or result.get('info', '天气查询失败'),
             }
         
         lives = result.get('lives', [])
         if not lives:
             return {
                 'success': False,
-                'error': '未获取到天气数据'
+                'error': '未获取到天气数据',
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': 'AMAP_WEATHER_EMPTY',
             }
         
         live = lives[0]
@@ -195,7 +273,15 @@ class WeatherService:
         
         return {
             'success': True,
-            'data': weather_info.to_dict()
+            'data': {
+                **weather_info.to_dict(),
+                'provider': 'amap',
+                'provider_status': 'ok',
+                'degraded': False,
+                'fallback_reason': None,
+                'source': 'amap',
+                'authenticity': self._build_authenticity('天气数据来自高德官方天气服务。'),
+            }
         }
     
     def get_weather_forecast(self, city: str) -> Dict:
@@ -218,14 +304,22 @@ class WeatherService:
         if result.get('status') != '1':
             return {
                 'success': False,
-                'error': result.get('info', '天气预报查询失败')
+                'error': result.get('info', '天气预报查询失败'),
+                'provider': 'amap',
+                'provider_status': result.get('provider_status', 'degraded'),
+                'degraded': True,
+                'fallback_reason': result.get('fallback_reason') or result.get('info', '天气预报查询失败'),
             }
         
         forecasts = result.get('forecasts', [])
         if not forecasts:
             return {
                 'success': False,
-                'error': '未获取到天气预报数据'
+                'error': '未获取到天气预报数据',
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': 'AMAP_FORECAST_EMPTY',
             }
         
         forecast_data = forecasts[0]
@@ -251,7 +345,13 @@ class WeatherService:
             'success': True,
             'data': {
                 'city': forecast_data.get('city', ''),
-                'forecast': forecast_list
+                'forecast': forecast_list,
+                'provider': 'amap',
+                'provider_status': 'ok',
+                'degraded': False,
+                'fallback_reason': None,
+                'source': 'amap',
+                'authenticity': self._build_authenticity('天气预报来自高德官方天气服务。'),
             }
         }
     
@@ -401,7 +501,13 @@ class WeatherService:
                 'route_weather': route_weather,
                 'overall_impact': overall_impact,
                 'total_cities': len(cities),
-                'cities_with_weather': len([w for w in route_weather if 'weather' in w])
+                'cities_with_weather': len([w for w in route_weather if 'weather' in w]),
+                'provider': 'amap',
+                'provider_status': 'ok',
+                'degraded': False,
+                'fallback_reason': None,
+                'source': 'amap',
+                'authenticity': self._build_authenticity('沿途天气数据来自高德官方天气服务。'),
             }
         }
     
@@ -469,11 +575,11 @@ def get_weather_service() -> WeatherService:
     if _weather_service is None:
         try:
             from flask import current_app
-            api_key = current_app.config.get('AMAP_WEB_KEY')
+            api_key = current_app.config.get('AMAP_SERVICE_KEY') or current_app.config.get('AMAP_WEB_KEY')
             _weather_service = WeatherService(api_key)
         except:
             # 在应用上下文外使用环境变量
             import os
-            api_key = os.environ.get('AMAP_WEB_KEY')
+            api_key = os.environ.get('AMAP_SERVICE_KEY') or os.environ.get('AMAP_WEB_KEY')
             _weather_service = WeatherService(api_key)
     return _weather_service

@@ -9,14 +9,6 @@ LABEL description="物流路径规划系统后端 - 43项功能完整版"
 
 WORKDIR /app
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    curl \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # 创建必要目录
 RUN mkdir -p /app/data /app/logs /app/database
 
@@ -38,7 +30,7 @@ ENV PYTHONUNBUFFERED=1
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/api/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health', timeout=5)" || exit 1
 
 # 启动命令 - 使用 gunicorn + eventlet 支持 WebSocket
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", "--timeout", "120", "--worker-class", "eventlet", "--keep-alive", "5", "run:app"]

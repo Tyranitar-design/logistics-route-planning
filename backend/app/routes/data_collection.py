@@ -9,11 +9,12 @@
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 from datetime import datetime
+import os
 import random
 
 data_collection_bp = Blueprint('data_collection', __name__)
 
-AMAP_KEY = 'e471e7d99965ef1f1a0d4113f580f5db'
+AMAP_KEY = os.environ.get('AMAP_SERVICE_KEY') or os.environ.get('AMAP_WEB_KEY') or os.environ.get('AMAP_KEY', '')
 
 # 城市名 -> 高德 adcode 映射
 CITY_ADCODE = {

@@ -78,6 +78,25 @@
               <template #header>
                 <span>📊 求解结果</span>
               </template>
+
+              <div class="result-explanation-header">
+                <div class="result-explanation-card">
+                  <span class="label">推荐求解器</span>
+                  <span class="value">{{ solveResult.solver || '-' }}</span>
+                </div>
+                <div class="result-explanation-card">
+                  <span class="label">真实性等级</span>
+                  <span class="value">{{ solveResult.authenticity?.level || '未标注' }}</span>
+                </div>
+                <div class="result-explanation-card">
+                  <span class="label">路线数量</span>
+                  <span class="value">{{ solveResult.routes?.length || 0 }}</span>
+                </div>
+                <div class="result-explanation-card">
+                  <span class="label">结论摘要</span>
+                  <span class="value">{{ solveResult.authenticity?.message || '已完成求解' }}</span>
+                </div>
+              </div>
               
               <el-row :gutter="20">
                 <el-col :span="6">
@@ -158,6 +177,20 @@
                   最佳: {{ compareResult.best_solver }}
                 </el-tag>
               </template>
+
+              <el-alert
+                v-if="compareResult.authenticity"
+                :title="compareResult.authenticity.is_strict ? '严格真实模式' : '对比结果真实性说明'"
+                :type="compareResult.authenticity.level === 'A' ? 'success' : 'warning'"
+                :closable="false"
+                style="margin-bottom: 16px;"
+              >
+                <template #default>
+                  <div style="font-size: 12px; line-height: 1.8;">
+                    {{ compareResult.authenticity.message }}
+                  </div>
+                </template>
+              </el-alert>
               
               <el-table :data="compareTableData" style="width: 100%">
                 <el-table-column prop="solver" label="求解器" width="150" />
@@ -303,6 +336,25 @@
             <el-alert :title="`推荐使用: ${recommendation.recommended}`" type="success" :closable="false">
               {{ recommendation.reason }}
             </el-alert>
+
+            <div class="result-explanation-header" style="margin-top: 16px;">
+              <div class="result-explanation-card">
+                <span class="label">客户数量</span>
+                <span class="value">{{ recommendParams.nCustomers }}</span>
+              </div>
+              <div class="result-explanation-card">
+                <span class="label">目标数量</span>
+                <span class="value">{{ recommendParams.nObjectives }}</span>
+              </div>
+              <div class="result-explanation-card">
+                <span class="label">精确解偏好</span>
+                <span class="value">{{ recommendParams.needExact ? '需要' : '可近似' }}</span>
+              </div>
+              <div class="result-explanation-card">
+                <span class="label">推荐结论</span>
+                <span class="value">{{ recommendation.recommended }}</span>
+              </div>
+            </div>
             
             <div v-if="recommendation.alternatives?.length" style="margin-top: 20px">
               <h4>备选方案</h4>
@@ -322,6 +374,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import { buildBarChartTheme, buildEmptyStateOption, getChartPalette } from '@/utils/chartTheme'
 
 // API 基础路径
 const API_BASE = '/api/optimization'
@@ -336,6 +389,7 @@ const moOptimizing = ref(false)
 // 图表引用
 const routeChartRef = ref(null)
 let routeChart = null
+const chartPalette = getChartPalette()
 
 // 演示数据
 const demoData = ref(null)
@@ -439,7 +493,18 @@ async function loadDemoData() {
 
 // 绘制路线图
 function drawRouteChart() {
-  if (!routeChartRef.value || !demoData.value || !solveResult.value?.routes) return
+  if (!routeChartRef.value) return
+  if (!demoData.value || !solveResult.value?.routes?.length) {
+    if (routeChart) {
+      routeChart.dispose()
+    }
+    routeChart = echarts.init(routeChartRef.value)
+    routeChart.setOption(buildEmptyStateOption(
+      '等待真实路径结果',
+      '当前尚未获得可用路径数据，暂不绘制路线图。'
+    ), true)
+    return
+  }
   
   try {
     if (routeChart) {
@@ -501,8 +566,31 @@ function drawRouteChart() {
     })
     
     const option = {
-      title: { text: '路线可视化', left: 'center', top: 10 },
-      tooltip: { trigger: 'item' },
+      title: {
+        text: '路线可视化',
+        left: 'center',
+        top: 10,
+        textStyle: {
+          color: chartPalette.textPrimary,
+          fontSize: 16,
+          fontWeight: 600
+        },
+        subtext: solveResult.value?.authenticity?.message || '基于当前求解结果的路径结构展示',
+        subtextStyle: {
+          color: chartPalette.textMuted,
+          fontSize: 11
+        }
+      },
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: 'rgba(6, 14, 28, 0.94)',
+        borderColor: 'rgba(0, 212, 255, 0.22)',
+        borderWidth: 1,
+        textStyle: {
+          color: chartPalette.textPrimary
+        }
+      },
       animationDurationUpdate: 1500,
       animationEasingUpdate: 'quinticInOut',
       series: [{
@@ -513,14 +601,15 @@ function drawRouteChart() {
         label: { 
           show: true, 
           position: 'right',
-          fontSize: 10
+          fontSize: 10,
+          color: chartPalette.textPrimary
         },
         edgeSymbol: ['circle', 'arrow'],
         edgeSymbolSize: [4, 8],
         cursor: 'pointer',
         data: data,
         links: links,
-        lineStyle: { opacity: 0.9 },
+        lineStyle: { opacity: 0.9, width: 2.5 },
         coordinateSystem: 'cartesian2d'
       }],
       xAxis: { 
@@ -746,5 +835,32 @@ onMounted(() => {
 
 .recommendation-result {
   padding: 20px 0;
+}
+
+.result-explanation-header {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.result-explanation-card {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(0, 212, 255, 0.12);
+}
+
+.result-explanation-card .label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: rgba(236, 247, 255, 0.5);
+}
+
+.result-explanation-card .value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #ecf7ff;
 }
 </style>

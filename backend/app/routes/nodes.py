@@ -10,8 +10,15 @@ from pydantic import ValidationError
 
 from app.models import db, Node
 from app.schemas import NodeCreate, NodeUpdate, NodeResponse
+from app.services.amap_service import get_amap_service
+from app.services.node_coordinate_service import build_resolution_candidates, resolve_node_coordinates
 
 nodes_bp = Blueprint('nodes', __name__)
+
+
+def _build_resolution_query(node: Node) -> str:
+    candidates = build_resolution_candidates(node)
+    return candidates[0] if candidates else ''
 
 
 @nodes_bp.route('', methods=['GET'])
@@ -175,3 +182,99 @@ def get_all_nodes():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@nodes_bp.route('/coordinate-audit', methods=['GET'])
+@jwt_required()
+def coordinate_audit():
+    """审计缺失坐标的节点"""
+    try:
+        nodes = Node.query.order_by(Node.created_at.desc()).all()
+        missing = []
+
+        for node in nodes:
+            if node.longitude is None or node.latitude is None:
+                missing.append({
+                    'id': node.id,
+                    'name': node.name,
+                    'province': node.province,
+                    'city': node.city,
+                    'district': node.district,
+                    'address': node.address,
+                    'resolution_query': _build_resolution_query(node),
+                    'resolution_candidates': build_resolution_candidates(node),
+                })
+
+        return jsonify({
+            'success': True,
+            'summary': {
+                'total_nodes': len(nodes),
+                'missing_coordinates': len(missing),
+            },
+            'nodes': missing,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@nodes_bp.route('/<int:node_id>/resolve-coordinates', methods=['POST'])
+@jwt_required()
+def resolve_coordinates(node_id):
+    """使用高德地理编码为单节点回填坐标"""
+    try:
+        node = Node.query.get(node_id)
+        if not node:
+            return jsonify({'success': False, 'error': '节点不存在'}), 404
+
+        resolution_candidates = build_resolution_candidates(node)
+        if not resolution_candidates:
+            return jsonify({
+                'success': False,
+                'error': '节点缺少可用于地理编码的地址信息'
+            }), 400
+
+        service = get_amap_service()
+        result = resolve_node_coordinates(node, service)
+
+        if not result.get('success'):
+            return jsonify({
+                'success': False,
+                'error': result.get('error'),
+                'provider': result.get('provider'),
+                'provider_status': result.get('provider_status'),
+                'degraded': result.get('degraded'),
+                'fallback_reason': result.get('fallback_reason'),
+                'authenticity': result.get('authenticity'),
+                'resolution_query': _build_resolution_query(node),
+                'resolution_query_used': result.get('resolution_query_used'),
+                'resolution_attempts': result.get('resolution_attempts', []),
+                'resolution_candidates': resolution_candidates,
+            }), 422
+
+        node.longitude = result.get('longitude')
+        node.latitude = result.get('latitude')
+        if result.get('province') and not node.province:
+            node.province = result.get('province')
+        if result.get('city') and not node.city:
+            node.city = result.get('city')
+        if result.get('district') and not node.district:
+            node.district = result.get('district')
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': '节点坐标回填成功',
+            'node': node.to_dict(),
+            'provider': result.get('provider'),
+            'provider_status': result.get('provider_status'),
+            'degraded': result.get('degraded'),
+            'fallback_reason': result.get('fallback_reason'),
+            'authenticity': result.get('authenticity'),
+            'resolution_query': _build_resolution_query(node),
+            'resolution_query_used': result.get('resolution_query_used'),
+            'resolution_attempts': result.get('resolution_attempts', []),
+            'resolution_candidates': resolution_candidates,
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500

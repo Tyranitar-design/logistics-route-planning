@@ -6,7 +6,7 @@
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required
 from app.services.amap_service import get_amap_service
 from app.models import db, Node
 import logging
@@ -14,6 +14,45 @@ import logging
 logger = logging.getLogger(__name__)
 
 amap_bp = Blueprint('amap', __name__)
+
+
+def _build_amap_authenticity(message: str, exact_ratio: float = 1.0, approx_ratio: float = 0.0):
+    return {
+        'mode': 'prefer_real',
+        'level': 'A',
+        'is_strict': False,
+        'allow_fallback': False,
+        'has_real_distance': True,
+        'has_real_duration': True,
+        'used_fallback': False,
+        'used_simulation': False,
+        'distance_source': 'amap',
+        'duration_source': 'amap',
+        'exact_ratio': exact_ratio,
+        'approx_ratio': approx_ratio,
+        'message': message,
+    }
+
+
+def _route_payload(result, strategy):
+    return {
+        'distance': result.distance,
+        'duration': result.duration,
+        'tolls': result.tolls,
+        'toll_distance': result.toll_distance,
+        'distance_km': round(result.distance / 1000, 2),
+        'duration_minutes': round(result.duration / 60, 1),
+        'steps': result.steps,
+        'polyline': result.polyline,
+        'traffic_info': result.traffic_info,
+        'provider': result.provider,
+        'provider_status': result.provider_status,
+        'degraded': result.degraded,
+        'fallback_reason': result.fallback_reason,
+        'authenticity': result.authenticity or _build_amap_authenticity(
+            f'路线来自高德真实路网路线服务（策略：{strategy}）。'
+        ),
+    }
 
 
 @amap_bp.route('/geocode', methods=['GET'])
@@ -45,7 +84,12 @@ def geocode():
                     'formatted_address': result.formatted_address,
                     'province': result.province,
                     'city': result.city,
-                    'district': result.district
+                    'district': result.district,
+                    'provider': result.provider,
+                    'provider_status': result.provider_status,
+                    'degraded': result.degraded,
+                    'fallback_reason': result.fallback_reason,
+                    'authenticity': result.authenticity,
                 }
             })
         else:
@@ -85,7 +129,12 @@ def regeocode():
                     'formatted_address': result.formatted_address,
                     'province': result.province,
                     'city': result.city,
-                    'district': result.district
+                    'district': result.district,
+                    'provider': result.provider,
+                    'provider_status': result.provider_status,
+                    'degraded': result.degraded,
+                    'fallback_reason': result.fallback_reason,
+                    'authenticity': result.authenticity,
                 }
             })
         else:
@@ -162,17 +211,7 @@ def driving_route():
         if result.success:
             return jsonify({
                 'success': True,
-                'data': {
-                    'distance': result.distance,
-                    'duration': result.duration,
-                    'tolls': result.tolls,
-                    'toll_distance': result.toll_distance,
-                    'distance_km': round(result.distance / 1000, 2),
-                    'duration_minutes': round(result.duration / 60, 1),
-                    'steps': result.steps,
-                    'polyline': result.polyline,
-                    'traffic_info': result.traffic_info
-                }
+                'data': _route_payload(result, strategy)
             })
         else:
             return jsonify({'success': False, 'error': result.error}), 400
@@ -225,6 +264,13 @@ def multi_route():
         service = get_amap_service()
         result = service.multi_route(origin_coords, dest_coords)
         
+        if result.get('success'):
+            result.setdefault('provider', 'amap')
+            result.setdefault('provider_status', 'ok')
+            result.setdefault('degraded', False)
+            result.setdefault('fallback_reason', None)
+            result.setdefault('authenticity', _build_amap_authenticity('多路线结果来自高德真实路网路线服务。'))
+
         return jsonify(result)
     
     except Exception as e:
@@ -255,7 +301,12 @@ def traffic_around():
                     'status': None,
                     'evaluation': '请提供经纬度参数',
                     'roads': [],
-                    'available': False
+                    'available': False,
+                    'provider': 'amap',
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': 'MISSING_COORDINATES',
+                    'authenticity': _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
         
@@ -269,7 +320,12 @@ def traffic_around():
                     'status': result.status,
                     'evaluation': result.evaluation,
                     'roads': result.roads,
-                    'available': True
+                    'available': True,
+                    'provider': result.provider,
+                    'provider_status': result.provider_status,
+                    'degraded': result.degraded,
+                    'fallback_reason': result.fallback_reason,
+                    'authenticity': result.authenticity or _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
         else:
@@ -280,7 +336,12 @@ def traffic_around():
                     'status': None,
                     'evaluation': '路况服务暂不可用',
                     'roads': [],
-                    'available': False
+                    'available': False,
+                    'provider': result.provider,
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': result.fallback_reason or result.error,
+                    'authenticity': result.authenticity or _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
     
@@ -292,7 +353,12 @@ def traffic_around():
                 'status': None,
                 'evaluation': '路况查询失败',
                 'roads': [],
-                'available': False
+                'available': False,
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
+                'authenticity': _build_amap_authenticity('路况结果来自高德官方路况服务。'),
             }
         })
 
@@ -318,7 +384,12 @@ def traffic_at_node(node_id):
                     'status': None,
                     'evaluation': '该节点没有坐标信息',
                     'roads': [],
-                    'available': False
+                    'available': False,
+                    'provider': 'amap',
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': 'NODE_COORDINATES_MISSING',
+                    'authenticity': _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
         
@@ -334,7 +405,12 @@ def traffic_at_node(node_id):
                     'status': result.status,
                     'evaluation': result.evaluation,
                     'roads': result.roads,
-                    'available': True
+                    'available': True,
+                    'provider': result.provider,
+                    'provider_status': result.provider_status,
+                    'degraded': result.degraded,
+                    'fallback_reason': result.fallback_reason,
+                    'authenticity': result.authenticity or _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
         else:
@@ -347,7 +423,12 @@ def traffic_at_node(node_id):
                     'status': None,
                     'evaluation': '路况服务暂不可用（需要在高德控制台开通）',
                     'roads': [],
-                    'available': False
+                    'available': False,
+                    'provider': result.provider,
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': result.fallback_reason or result.error,
+                    'authenticity': result.authenticity or _build_amap_authenticity('路况结果来自高德官方路况服务。'),
                 }
             })
     
@@ -361,7 +442,12 @@ def traffic_at_node(node_id):
                 'status': None,
                 'evaluation': '路况查询失败',
                 'roads': [],
-                'available': False
+                'available': False,
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
+                'authenticity': _build_amap_authenticity('路况结果来自高德官方路况服务。'),
             }
         })
 
@@ -418,6 +504,13 @@ def distance_matrix():
         service = get_amap_service()
         result = service.distance_matrix(origin_coords, dest_coords, strategy)
         
+        if result.get('success'):
+            result.setdefault('provider', 'amap')
+            result.setdefault('provider_status', 'ok')
+            result.setdefault('degraded', False)
+            result.setdefault('fallback_reason', None)
+            result.setdefault('authenticity', _build_amap_authenticity('距离矩阵来自高德官方距离服务。'))
+
         return jsonify(result)
     
     except Exception as e:
@@ -478,7 +571,22 @@ def compare_routes():
                 'duration_minutes': local_result.total_time * 60,  # 小时转分钟
                 'cost': local_result.total_cost,
                 'algorithm': local_result.algorithm,
-                'computation_time': local_result.computation_time
+                'computation_time': local_result.computation_time,
+                'authenticity': {
+                    'mode': 'approximate',
+                    'level': 'C',
+                    'is_strict': False,
+                    'allow_fallback': True,
+                    'has_real_distance': False,
+                    'has_real_duration': False,
+                    'used_fallback': False,
+                    'used_simulation': False,
+                    'distance_source': 'local_graph',
+                    'duration_source': 'local_graph',
+                    'exact_ratio': 0.0,
+                    'approx_ratio': 1.0,
+                    'message': '当前结果来自本地图算法/近似图结构，仅供参考，不建议直接用于正式调度决策。',
+                },
             } if local_result.success else None
         }
 
@@ -585,7 +693,12 @@ def validate_real_distance():
                     'amap_integrated': use_amap,
                     'real_distance_enabled': result['source'] in ['amap', 'cache'],
                     'fallback_enabled': result['source'] == 'haversine_corrected'
-                }
+                },
+                'provider': 'amap',
+                'provider_status': 'ok' if use_amap else 'degraded',
+                'degraded': not use_amap,
+                'fallback_reason': None if use_amap else 'AMAP_DISABLED',
+                'authenticity': _build_amap_authenticity('真实距离验证优先使用高德官方距离服务。'),
             }
         })
 

@@ -78,6 +78,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { Select } from '@element-plus/icons-vue'
+import { buildBarChartTheme, buildEmptyStateOption, buildRadarChartTheme, getChartPalette } from '@/utils/chartTheme'
 
 const props = defineProps({
   routes: {
@@ -94,6 +95,7 @@ const radarChartRef = ref(null)
 const barChartRef = ref(null)
 let radarChart = null
 let barChart = null
+const palette = getChartPalette()
 
 // 表格数据
 const tableData = computed(() => {
@@ -157,6 +159,11 @@ function initRadarChart() {
   }
   
   radarChart = echarts.init(radarChartRef.value)
+
+  if (!props.routes.length) {
+    radarChart.setOption(buildEmptyStateOption('等待方案对比数据', '当前尚未生成可读的方案评分。', palette.teal), true)
+    return
+  }
   
   const indicators = [
     { name: '距离', max: 100 },
@@ -184,45 +191,26 @@ function initRadarChart() {
     }
   })
   
-  const option = {
-    tooltip: {
-      trigger: 'item'
-    },
-    legend: {
-      bottom: 0,
-      data: seriesData.map(s => s.name)
-    },
-    radar: {
-      shape: 'polygon',
-      splitNumber: 5,
-      axisName: {
-        color: '#606266'
-      },
-      splitLine: {
-        lineStyle: {
-          color: '#e4e7ed'
-        }
-      },
-      splitArea: {
-        show: true,
-        areaStyle: {
-          color: ['rgba(64, 158, 255, 0.05)', 'rgba(64, 158, 255, 0.1)']
-        }
-      },
-      indicator: indicators
-    },
+  radarChart.setOption(buildRadarChartTheme({
+    indicators,
+    title: '等待方案对比数据',
+    subtitle: '当前尚未获得可读的方案评分。',
     series: [{
       type: 'radar',
       data: seriesData,
+      lineStyle: {
+        width: 2
+      },
+      areaStyle: {
+        opacity: 0.08
+      },
       emphasis: {
         lineStyle: {
           width: 3
         }
       }
     }]
-  }
-  
-  radarChart.setOption(option)
+  }), true)
 }
 
 // 初始化柱状图
@@ -236,56 +224,29 @@ function initBarChart() {
   barChart = echarts.init(barChartRef.value)
   
   const routes = props.routes.slice(0, 5)
+  if (!routes.length) {
+    barChart.setOption(buildEmptyStateOption('等待指标详情', '当前尚未获得可用方案对比结果。', palette.amber), true)
+    return
+  }
   const xData = routes.map((r, i) => r.title || `方案 ${i + 1}`)
-  
-  const option = {
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: {
-        type: 'shadow'
-      }
-    },
-    legend: {
-      bottom: 0,
-      data: ['距离(km)', '时间(min)', '成本(×10元)']
-    },
-    grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '15%',
-      top: '3%',
-      containLabel: true
-    },
-    xAxis: {
-      type: 'category',
-      data: xData
-    },
-    yAxis: {
-      type: 'value'
-    },
+
+  barChart.setOption(buildBarChartTheme({
+    categories: xData,
     series: [
       {
         name: '距离(km)',
-        type: 'bar',
-        data: routes.map(r => r.objectives?.distance?.toFixed(1) || 0),
-        itemStyle: { color: '#409EFF' }
+        data: routes.map(r => Number(r.objectives?.distance || 0))
       },
       {
         name: '时间(min)',
-        type: 'bar',
-        data: routes.map(r => r.objectives?.time?.toFixed(1) || 0),
-        itemStyle: { color: '#67C23A' }
+        data: routes.map(r => Number(r.objectives?.time || 0))
       },
       {
-        name: '成本(×10元)',
-        type: 'bar',
-        data: routes.map(r => (r.objectives?.cost / 10)?.toFixed(1) || 0),
-        itemStyle: { color: '#E6A23C' }
+        name: '成本(元)',
+        data: routes.map(r => Number(r.objectives?.cost || 0))
       }
     ]
-  }
-  
-  barChart.setOption(option)
+  }), true)
 }
 
 // 归一化数值

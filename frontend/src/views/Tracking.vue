@@ -9,7 +9,7 @@
               <el-option 
                 v-for="order in inTransitOrders" 
                 :key="order.id"
-                :label="`${order.order_number} - ${order.pickup_node?.name || '?'} → ${order.delivery_node?.name || '?'}`"
+                :label="`${order.order_number} - ${order.pickup_node?.name || order.origin_name || '?'} → ${order.delivery_node?.name || order.destination_name || '?'}`"
                 :value="order.id"
               />
             </el-select>
@@ -49,8 +49,8 @@
           <el-descriptions :column="1" size="small" border>
             <el-descriptions-item label="订单号">{{ currentOrder.order_number }}</el-descriptions-item>
             <el-descriptions-item label="货物">{{ currentOrder.cargo_name || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="起点">{{ currentOrder.pickup_node?.name || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="终点">{{ currentOrder.delivery_node?.name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="起点">{{ currentOrder.pickup_node?.name || currentOrder.origin_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="终点">{{ currentOrder.delivery_node?.name || currentOrder.destination_name || '-' }}</el-descriptions-item>
             <el-descriptions-item label="状态">
               <el-tag :type="getStatusType(currentOrder.status)" size="small">
                 {{ statusMap[currentOrder.status] }}
@@ -87,6 +87,22 @@
                 <span class="value highlight">{{ estimatedArrival }}</span>
               </div>
             </div>
+
+            <el-alert
+              v-if="routeTruthMeta.visible"
+              :type="routeTruthMeta.alertType"
+              :closable="false"
+              class="route-truth-alert"
+            >
+              <template #title>真实性等级 {{ routeTruthMeta.level }}：{{ routeTruthMeta.message }}</template>
+              <div class="route-truth-tags">
+                <el-tag size="small" effect="plain">距离：{{ routeTruthMeta.distanceSource }}</el-tag>
+                <el-tag size="small" effect="plain">路径：{{ routeTruthMeta.pathSource }}</el-tag>
+                <el-tag v-if="routeTruthMeta.fallbackReason" size="small" type="warning" effect="plain">
+                  降级：{{ routeTruthMeta.fallbackReason }}
+                </el-tag>
+              </div>
+            </el-alert>
           </div>
         </el-card>
         
@@ -184,6 +200,27 @@ const estimatedArrival = computed(() => {
   return eta.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 })
 
+const routeTruthMeta = computed(() => {
+  const route = routeData.value || {}
+  const level = route.authenticity_level || route.authenticity?.level || 'C'
+  const distanceSource = route.distance_source || route.distanceSource || 'tracking_route_distance'
+  const pathSource = route.path_source || route.pathSource || 'tracking_simulation'
+  const fallbackReason = route.fallback_reason || route.authenticity?.fallback_reason || route.degraded_reason || ''
+  const isDegraded = level !== 'A' || Boolean(fallbackReason) || ['tracking_simulation', 'synthetic_preview'].includes(pathSource)
+
+  return {
+    visible: Boolean(routeData.value),
+    level,
+    distanceSource,
+    pathSource,
+    fallbackReason,
+    alertType: isDegraded ? 'warning' : 'success',
+    message: isDegraded
+      ? '当前轨迹用于运输过程演示或兼容展示，不应按真实导航轨迹逐点解读'
+      : '当前轨迹携带真实路径与距离来源'
+  }
+})
+
 // 方法
 const getStatusType = (status) => {
   const types = {
@@ -237,9 +274,15 @@ const onOrderChange = async (orderId) => {
   stopAnimation()
   
   try {
-    // 获取订单详情
-    const orderRes = await getOrder(orderId)
-    currentOrder.value = orderRes.order
+    // 获取订单详情；真实 shipment_fact 订单在部分运行态下可能仍无 detail 路由兼容
+    // 失败时回退到当前下拉列表中的已选订单，避免阻塞轨迹加载
+    try {
+      const orderRes = await getOrder(orderId)
+      currentOrder.value = orderRes.order
+    } catch (orderError) {
+      currentOrder.value = inTransitOrders.value.find(order => order.id === orderId) || null
+      console.warn('订单详情回退到列表项:', orderError)
+    }
     
     // 获取轨迹模拟数据
     const trackRes = await simulateTracking(orderId, playSpeed.value)
@@ -511,6 +554,18 @@ onUnmounted(() => {
 
 .progress-details {
   margin-top: 20px;
+}
+
+.route-truth-alert {
+  margin-top: 14px;
+  line-height: 1.7;
+}
+
+.route-truth-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .detail-item {

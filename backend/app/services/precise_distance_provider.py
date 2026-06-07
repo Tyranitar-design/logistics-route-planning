@@ -194,6 +194,8 @@ class PreciseDistanceProvider:
                         source = "cache_exact" if is_exact else "cache_approx"
                     elif raw_source == "amap":
                         source = "amap"
+                    elif raw_source == "amap_route":
+                        source = "amap_route"
                     elif raw_source == "haversine_corrected":
                         source = "haversine_corrected"
                     else:
@@ -220,6 +222,8 @@ class PreciseDistanceProvider:
                         approx_cache_count += 1
                     elif source == "amap":
                         fresh_amap_count += 1
+                    elif source == "amap_route":
+                        fresh_amap_count += 1
                     elif source == "haversine_corrected":
                         fallback_count += 1
 
@@ -242,6 +246,12 @@ class PreciseDistanceProvider:
             "amap_calls": int(raw.get("amap_calls", 0)),
             "haversine_fallbacks": int(raw.get("haversine_fallbacks", 0)),
             "total_pairs": int(raw.get("total_pairs", total_count)),
+            "amap_attempted_pairs": int(raw.get("amap_attempted_pairs", 0)),
+            "amap_successes": int(raw.get("amap_successes", 0)),
+            "amap_route_attempted_pairs": int(raw.get("amap_route_attempted_pairs", 0)),
+            "amap_route_successes": int(raw.get("amap_route_successes", 0)),
+            "amap_rejected_pairs": int(raw.get("amap_rejected_pairs", 0)),
+            "cache_rejected_pairs": int(raw.get("cache_rejected_pairs", 0)),
         }
 
         return DistanceMatrixResult(
@@ -257,6 +267,15 @@ class PreciseDistanceProvider:
                 "provider": "PreciseDistanceProvider",
                 "used_cache_service": True,
                 "use_amap": use_amap,
+                "provider_status": raw.get("provider_status") or "ok",
+                "fallback_reason": raw.get("fallback_reason"),
+                "distance_matrix_fallback_reason": raw.get("distance_matrix_fallback_reason"),
+                "amap_attempted_pairs": int(raw.get("amap_attempted_pairs", 0)),
+                "amap_successes": int(raw.get("amap_successes", 0)),
+                "amap_route_attempted_pairs": int(raw.get("amap_route_attempted_pairs", 0)),
+                "amap_route_successes": int(raw.get("amap_route_successes", 0)),
+                "amap_rejected_pairs": int(raw.get("amap_rejected_pairs", 0)),
+                "cache_rejected_pairs": int(raw.get("cache_rejected_pairs", 0)),
             },
         )
 

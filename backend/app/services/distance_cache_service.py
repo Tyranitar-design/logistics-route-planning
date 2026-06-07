@@ -59,6 +59,9 @@ BATCH_MAX_DESTINATIONS = 50
 # 渐进升级：当缓存里已有近似值时，每次矩阵构建最多尝试升级这么多个点对
 MAX_AMAP_UPGRADE_PAIRS_PER_CALL = 3
 
+# AMap 矩阵接口偶发返回异常小距离时，必须与直线距离做基本物理校验。
+MIN_ROAD_TO_STRAIGHT_RATIO = 0.6
+
 
 class DistanceCacheService:
     """
@@ -567,12 +570,35 @@ class DistanceCacheService:
         missed_pairs = []  # 未命中的点对
         upgrade_pairs = []  # 已命中近似缓存、但允许尝试升级为精确值的点对
         
+        cache_rejected_pairs = 0
+
         for idx, (i, j, origin, dest) in enumerate(all_pairs):
             if idx in cached_results:
                 cached = cached_results[idx]
+                cache_is_plausible = True
+                if cached.source == 'amap':
+                    cache_is_plausible = self._is_plausible_amap_distance(
+                        origin,
+                        dest,
+                        cached.distance_m,
+                    )
                 
                 # 方案 A：use_amap=True 时，近似缓存不直接视为最终命中，而是渐进升级
-                if cached.source == 'amap' or not use_amap:
+                if cached.source == 'amap' and not cache_is_plausible and use_amap:
+                    matrix[i][j] = {
+                        'distance_m': cached.distance_m,
+                        'distance_km': round(cached.distance_m / 1000, 2),
+                        'duration_s': cached.duration_s,
+                        'duration_minutes': round(cached.duration_s / 60, 1),
+                        'source': 'cache',
+                        'is_exact': False,
+                        'correction_factor': cached.correction_factor
+                    }
+                    cache_hits += 1
+                    cache_rejected_pairs += 1
+                    if i != j and len(upgrade_pairs) < MAX_AMAP_UPGRADE_PAIRS_PER_CALL:
+                        upgrade_pairs.append((i, j, origin, dest))
+                elif cached.source == 'amap' or not use_amap:
                     matrix[i][j] = {
                         'distance_m': cached.distance_m,
                         'distance_km': round(cached.distance_m / 1000, 2),
@@ -607,22 +633,53 @@ class DistanceCacheService:
         amap_calls = 0
         haversine_fallbacks = 0
         
+        amap_failure_reason = None
+        amap_provider_status = None
+        amap_attempted_pairs = 0
+        amap_successes = 0
+        amap_route_attempted_pairs = 0
+        amap_route_successes = 0
+        amap_rejected_pairs = 0
+        distance_matrix_fallback_reason = None
+
         if candidate_amap_pairs and use_amap:
-            amap_results = self._call_amap_batch_distance(
+            amap_attempted_pairs = len(candidate_amap_pairs)
+            amap_response = self._call_amap_batch_distance(
                 candidate_amap_pairs, strategy
             )
+            amap_results = amap_response.get('results') if amap_response else None
+            amap_failure_reason = amap_response.get('fallback_reason') if amap_response else None
+            amap_provider_status = amap_response.get('provider_status') if amap_response else None
+            distance_matrix_fallback_reason = amap_failure_reason
             
             if amap_results:
                 # 写入缓存
                 cache_records = []
                 for (i, j, origin, dest), result in zip(candidate_amap_pairs, amap_results):
+                    if result is not None and not self._is_plausible_amap_distance(origin, dest, result['distance_m']):
+                        result = None
+                        amap_rejected_pairs += 1
+                        distance_matrix_fallback_reason = (
+                            distance_matrix_fallback_reason
+                            or 'AMAP_DISTANCE_MATRIX_IMPLAUSIBLE_DISTANCE'
+                        )
+                    if result is None:
+                        amap_route_attempted_pairs += 1
+                        try:
+                            route_result = self._call_amap_route_distance(origin, dest, strategy)
+                        except Exception as e:
+                            logger.warning(f"高德驾车路径规划兜底失败: {e}")
+                            route_result = None
+                        if route_result:
+                            result = route_result
+                            amap_route_successes += 1
                     if result is not None:
                         matrix[i][j] = {
                             'distance_m': result['distance_m'],
                             'distance_km': round(result['distance_m'] / 1000, 2),
                             'duration_s': result['duration_s'],
                             'duration_minutes': round(result['duration_s'] / 60, 1),
-                            'source': 'amap',
+                            'source': result.get('source', 'amap'),
                             'is_exact': True,
                             'correction_factor': 0.0
                         }
@@ -636,6 +693,7 @@ class DistanceCacheService:
                             'correction_factor': 0.0
                         })
                         amap_calls += 1
+                        amap_successes += 1
                     elif (i, j, origin, dest) in missed_pairs:
                         # 对真正未命中的点对，高德失败时才落回 Haversine
                         dist_km = self.corrected_distance_km(origin, dest)
@@ -666,8 +724,44 @@ class DistanceCacheService:
                 if cache_records:
                     self.put_cached_batch(cache_records)
             else:
-                # 高德批量 API 完全失败：只对真正未命中的点对兜底；已有近似缓存的点保持原值
+                # 高德批量 API 完全失败：逐对尝试驾车路径规划补 exact；
+                # 仍失败时只对真正未命中的点对兜底，已有近似缓存的点保持原值。
+                cache_records = []
+                for i, j, origin, dest in candidate_amap_pairs:
+                    amap_route_attempted_pairs += 1
+                    try:
+                        route_result = self._call_amap_route_distance(origin, dest, strategy)
+                    except Exception as e:
+                        logger.warning(f"高德驾车路径规划兜底失败: {e}")
+                        route_result = None
+                    if not route_result:
+                        continue
+
+                    matrix[i][j] = {
+                        'distance_m': route_result['distance_m'],
+                        'distance_km': round(route_result['distance_m'] / 1000, 2),
+                        'duration_s': route_result['duration_s'],
+                        'duration_minutes': round(route_result['duration_s'] / 60, 1),
+                        'source': 'amap_route',
+                        'is_exact': True,
+                        'correction_factor': 0.0
+                    }
+                    cache_records.append({
+                        'origin': origin,
+                        'destination': dest,
+                        'distance_m': route_result['distance_m'],
+                        'duration_s': route_result['duration_s'],
+                        'source': 'amap',
+                        'strategy': strategy,
+                        'correction_factor': 0.0
+                    })
+                    amap_calls += 1
+                    amap_successes += 1
+                    amap_route_successes += 1
+
                 for i, j, origin, dest in missed_pairs:
+                    if matrix[i][j] is not None:
+                        continue
                     dist_km = self.corrected_distance_km(origin, dest)
                     dist_m = int(dist_km * 1000)
                     dur_s = int(self.estimate_duration_hours(dist_km) * 3600)
@@ -683,9 +777,9 @@ class DistanceCacheService:
                     }
                     haversine_fallbacks += 1
                 
-                # 只为真正未命中的点补缓存
-                cache_records = []
                 for i, j, origin, dest in missed_pairs:
+                    if matrix[i][j] is not None:
+                        continue
                     dist_km = self.corrected_distance_km(origin, dest)
                     dist_m = int(dist_km * 1000)
                     dur_s = int(self.estimate_duration_hours(dist_km) * 3600)
@@ -736,7 +830,16 @@ class DistanceCacheService:
             'cache_hits': cache_hits,
             'amap_calls': amap_calls,
             'haversine_fallbacks': haversine_fallbacks,
-            'total_pairs': len(all_pairs)
+            'total_pairs': len(all_pairs),
+            'amap_attempted_pairs': amap_attempted_pairs,
+            'amap_successes': amap_successes,
+            'amap_route_attempted_pairs': amap_route_attempted_pairs,
+            'amap_route_successes': amap_route_successes,
+            'amap_rejected_pairs': amap_rejected_pairs,
+            'cache_rejected_pairs': cache_rejected_pairs,
+            'provider_status': amap_provider_status or ('ok' if not amap_failure_reason else 'degraded'),
+            'fallback_reason': None if amap_successes > 0 else amap_failure_reason,
+            'distance_matrix_fallback_reason': distance_matrix_fallback_reason,
         }
     
     # ----------------------------------------------------------------
@@ -773,7 +876,7 @@ class DistanceCacheService:
         self,
         pairs: List[Tuple[int, int, Tuple[float, float], Tuple[float, float]]],
         strategy: int = 0
-    ) -> Optional[List[Optional[Dict]]]:
+    ) -> Dict:
         """
         调用高德批量距离 API
         
@@ -791,7 +894,11 @@ class DistanceCacheService:
         from app.services.amap_service import get_amap_service
         
         if not pairs:
-            return []
+            return {
+                'results': [],
+                'provider_status': 'ok',
+                'fallback_reason': None,
+            }
         
         # 提取去重的起点和终点
         unique_origins = {}
@@ -812,6 +919,8 @@ class DistanceCacheService:
         all_results = {}
         
         service = get_amap_service()
+        fallback_reason = None
+        provider_status = 'ok'
         
         for o_start in range(0, len(origin_list), BATCH_MAX_ORIGINS):
             for d_start in range(0, len(dest_list), BATCH_MAX_DESTINATIONS):
@@ -839,8 +948,18 @@ class DistanceCacheService:
                                     'distance_m': distance_m,
                                     'duration_s': duration_s
                                 }
+                    else:
+                        provider_status = result.get('provider_status') or 'degraded'
+                        fallback_reason = (
+                            result.get('fallback_reason')
+                            or result.get('error')
+                            or result.get('info')
+                            or 'AMAP_DISTANCE_MATRIX_FAILED'
+                        )
                 except Exception as e:
                     logger.warning(f"高德批量距离 API 调用失败: {e}")
+                    provider_status = 'degraded'
+                    fallback_reason = str(e)
                     continue
         
         # 按原始 pairs 顺序组装结果
@@ -850,7 +969,60 @@ class DistanceCacheService:
             d_key = self._make_key_coords(*dest)
             output.append(all_results.get((o_key, d_key)))
         
-        return output
+        if not all_results and not fallback_reason:
+            provider_status = 'degraded'
+            fallback_reason = 'AMAP_DISTANCE_MATRIX_RETURNED_NO_RESULTS'
+
+        return {
+            'results': output,
+            'provider_status': provider_status,
+            'fallback_reason': fallback_reason,
+        }
+
+    def _is_plausible_amap_distance(
+        self,
+        origin: Tuple[float, float],
+        destination: Tuple[float, float],
+        distance_m: int,
+    ) -> bool:
+        """Basic sanity guard for provider distances before treating them as exact."""
+        if self._make_key_coords(*origin) == self._make_key_coords(*destination):
+            return distance_m == 0
+
+        straight_m = self.haversine_km(origin, destination) * 1000
+        if straight_m <= 1000:
+            return distance_m > 0
+
+        return distance_m >= straight_m * MIN_ROAD_TO_STRAIGHT_RATIO
+
+    def _call_amap_route_distance(
+        self,
+        origin: Tuple[float, float],
+        destination: Tuple[float, float],
+        strategy: int = 0,
+    ) -> Optional[Dict]:
+        """调用高德驾车路径规划作为矩阵接口失败后的精确道路距离兜底。"""
+        if self._make_key_coords(*origin) == self._make_key_coords(*destination):
+            return None
+
+        from app.services.amap_service import get_amap_service
+
+        service = get_amap_service()
+        result = service.driving_route(
+            origin,
+            destination,
+            strategy=strategy,
+            show_traffic=False,
+        )
+
+        if getattr(result, 'success', False) and getattr(result, 'distance', 0) > 0:
+            return {
+                'distance_m': int(result.distance),
+                'duration_s': int(result.duration or 0),
+                'source': 'amap_route',
+            }
+
+        return None
     
     # ----------------------------------------------------------------
     # 缓存管理

@@ -6,7 +6,10 @@ import requests
 import os
 
 # AMap API Key (Web Service)
-AMAP_WEB_KEY = "e471e7d99965ef1f1a0d4113f580f5db"
+AMAP_WEB_KEY = os.environ.get("AMAP_WEB_KEY") or os.environ.get("AMAP_SERVICE_KEY") or os.environ.get("AMAP_KEY", "")
+
+if not AMAP_WEB_KEY:
+    raise SystemExit("Please set AMAP_WEB_KEY or AMAP_SERVICE_KEY before running this script.")
 
 def test_geocode():
     """Test geocoding"""

@@ -1,0 +1,109 @@
+# Production compose for Tencent Cloud command-center deployment.
+# Core stack only: PostgreSQL + Redis cache + Flask backend + Vue/Nginx frontend.
+
+services:
+  postgres:
+    image: postgis/postgis:18-3.6-alpine
+    container_name: logistics-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-logistics_route_system}
+      POSTGRES_USER: ${POSTGRES_USER:-logistics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgis18_cluster:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-logistics} -d ${POSTGRES_DB:-logistics_route_system}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - logistics-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: logistics-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - logistics-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: logistics-backend
+    environment:
+      FLASK_CONFIG: docker
+      FLASK_ENV: production
+      DISABLE_ML_ROUTES: "1"
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-logistics}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-logistics_route_system}
+      POSTGRES_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-logistics}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-logistics_route_system}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      AMAP_WEB_KEY: ${AMAP_WEB_KEY:-}
+      AMAP_SERVICE_KEY: ${AMAP_SERVICE_KEY:-}
+      AMAP_KEY: ${AMAP_SERVICE_KEY:-}
+      TIANAPI_KEY: ${TIANAPI_KEY:-}
+      TIANDITU_BROWSER_KEY: ${TIANDITU_BROWSER_KEY:-}
+      TIANDITU_SERVER_KEY: ${TIANDITU_SERVER_KEY:-}
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      # Keep AMap provider calls from stalling on intermittent Docker DNS/IPv6 resolution.
+      - "restapi.amap.com:${AMAP_RESTAPI_IPV4:-59.82.14.114}"
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - logistics-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: logistics-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - logistics-network
+
+volumes:
+  postgis18_cluster:
+  redis_data:
+
+networks:
+  logistics-network:
+    driver: bridge
+    name: logistics-command-center-network

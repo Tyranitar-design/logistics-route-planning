@@ -163,6 +163,52 @@
   }
 }
 
+/* Command center shell */
+@media (max-width: 1024px) {
+  .command-header__right {
+    justify-content: flex-start !important;
+  }
+
+  .command-status-strip {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .dashboard-secondary-grid,
+  .dashboard-primary-grid,
+  .dashboard-hero,
+  .insight-support-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .command-status-strip {
+    grid-template-columns: 1fr !important;
+  }
+
+  .hero-chips {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+  }
+
+  .situation-grid,
+  .matrix-grid,
+  .insight-grid,
+  .action-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .matrix-header,
+  .insight-header {
+    align-items: flex-start !important;
+  }
+
+  .matrix-header p,
+  .insight-header p {
+    text-align: left !important;
+  }
+}
+
 /* 地图容器 */
 @media (max-width: 768px) {
   .map-container {

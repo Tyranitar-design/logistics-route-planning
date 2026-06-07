@@ -5,11 +5,36 @@
 
 ---
 
-**版本**: v2.1
+**版本**: v2.2 Command Center
 **开发周期**: 25 天（2026-03-18 ~ 2026-04-12）
 **合作团队**: 小宇 + 小彩
 **功能数量**: **55+ 项核心功能**
 **在线演示**: https://logistics-demo-yu.top  
+
+---
+
+## 2026 最新指挥中枢版本
+
+当前主线已经升级为企业级“物流指挥中枢 / Logistics Command Center”界面，默认首屏为深色指挥舱：
+
+- 指挥总览：订单、节点、路线、车辆、风险提示实时聚合
+- 地图视图：节点空间态势、路线规划、天气与路况联动
+- 调度执行：智能调度、轨迹监控、订单/车辆/节点/路线管理
+- 优化决策：多目标优化、Pareto 前沿、可解释路线方案
+- 数据底座：PostgreSQL/PostGIS 为主库，已验证 5 万条真实物流明细
+
+核心部署文档见：
+
+- [物流指挥中枢部署说明](docs/COMMAND_CENTER_DEPLOYMENT.md)
+- [Docker 部署说明](docs/DOCKER_DEPLOY.md)
+
+生产部署使用 `docker-compose.prod.yml`，只启动核心服务：
+
+```text
+PostgreSQL/PostGIS + Redis + Flask Backend + Vue/Nginx Frontend
+```
+
+大数据相关目录仍保留在仓库中，但腾讯云核心演示部署默认不启动大数据容器。
 
 ---
 
@@ -26,7 +51,7 @@
   ORM: SQLAlchemy 2.0
   认证：JWT (Flask-JWT-Extended)
   实时通信：WebSocket (Flask-SocketIO)
-  数据库：SQLite / PostgreSQL
+  数据库：PostgreSQL/PostGIS（主线）/ SQLite（兼容兜底）
   
 前端技术:
   框架：Vue 3 (Composition API)
@@ -35,7 +60,7 @@
   路由：Vue Router 4
   HTTP: Axios
   图表：ECharts 5.4
-  地图：Leaflet.js + 高德地图 API
+  地图：Leaflet.js + 高德地图 API（带降级容错）
   
 移动端:
   平台：微信小程序原生
@@ -374,7 +399,7 @@ pip install -r requirements.txt
 
 ### Q3: 高德地图无法加载
 **A**: 
-1. 确认 API Key 有效（Key: `e471e7d99965ef1f1a0d4113f580f5db`）
+1. 确认已在环境变量中配置 `AMAP_WEB_KEY` / `AMAP_SERVICE_KEY`
 2. 在[高德开放平台](https://lbs.amap.com/)控制台设置 Web 服务 Key
 3. 检查网络访问高德 API
 

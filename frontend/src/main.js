@@ -9,6 +9,7 @@ import App from './App.vue'
 import router from './router'
 import i18n from './locales'
 
+import './assets/command-center-theme.css'
 import './assets/main.css'
 import './assets/mobile.css' // 移动端响应式样式
 

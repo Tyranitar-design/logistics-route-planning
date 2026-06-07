@@ -138,6 +138,28 @@
                 {{ recommendResult.traffic_info.evaluation || '路况未知' }}
               </el-tag>
             </div>
+
+            <div v-if="recommendResult.provider || recommendResult.authenticity" class="provider-status-panel">
+              <el-alert
+                :type="recommendResult.degraded ? 'warning' : 'success'"
+                :closable="false"
+                show-icon
+              >
+                <template #title>
+                  <span style="font-weight: 600">
+                    {{ recommendResult.degraded ? '服务降级中' : '真实服务链路' }}
+                  </span>
+                </template>
+                <div class="provider-status-meta">
+                  <span>Provider: {{ recommendResult.provider || 'unknown' }}</span>
+                  <span>Status: {{ recommendResult.provider_status || 'unknown' }}</span>
+                  <span v-if="recommendResult.fallback_reason">原因: {{ recommendResult.fallback_reason }}</span>
+                </div>
+                <div v-if="recommendResult.authenticity?.message" class="provider-status-message">
+                  {{ recommendResult.authenticity.message }}
+                </div>
+              </el-alert>
+            </div>
             
             <el-descriptions :column="1" size="small" border>
               <el-descriptions-item label="总距离">
@@ -162,8 +184,16 @@
                 {{ recommendResult.total_cost }} 元
               </el-descriptions-item>
               <el-descriptions-item label="数据来源">
-                <el-tag size="small" :type="recommendResult.source === 'amap' ? 'success' : 'info'">
-                  {{ recommendResult.source === 'amap' ? '高德地图' : '本地算法' }}
+                <el-tag
+                  size="small"
+                  :type="recommendResult.degraded ? 'warning' : (recommendResult.source === 'amap' ? 'success' : 'info')"
+                >
+                  {{ recommendResult.degraded ? '高德降级估算' : (recommendResult.source === 'amap' ? '高德地图' : '本地算法') }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="降级原因" v-if="recommendResult.degraded">
+                <el-tag size="small" type="warning">
+                  {{ recommendResult.fallback_reason || '第三方地图服务暂不可用' }}
                 </el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="天气影响" v-if="recommendResult.weather_impact">
@@ -250,6 +280,11 @@
             </el-tag>
             <div style="margin-top: 10px; font-size: 13px; color: #606266">
               当前路况：{{ getTrafficStatusText(currentTraffic.status) }}
+            </div>
+            <div class="traffic-provider-meta">
+              <span>Provider: {{ currentTraffic.provider || 'amap' }}</span>
+              <span>Status: {{ currentTraffic.provider_status || (currentTraffic.available ? 'ok' : 'degraded') }}</span>
+              <span v-if="currentTraffic.fallback_reason">原因: {{ currentTraffic.fallback_reason }}</span>
             </div>
           </div>
           <div v-else style="color: #909399; font-size: 13px">
@@ -869,12 +904,17 @@ const handleRecommend = async () => {
         show_traffic: true
       })
       
-      if (res.success) {
-        recommendResult.value = {
-          ...res.data,
-          source: 'amap'
-        }
-        ElMessage.success('高德地图路线规划成功！')
+        if (res.success) {
+          const isDegraded = Boolean(res.data?.degraded || res.data?.provider_status === 'degraded')
+          recommendResult.value = {
+            ...res.data,
+            source: 'amap'
+          }
+          if (isDegraded) {
+            ElMessage.warning('高德服务暂不可用，已使用坐标估算路线展示')
+          } else {
+            ElMessage.success('高德地图路线规划成功！')
+          }
         
         // 在地图上绘制路线
         drawAmapRoute(res.data.polyline)
@@ -1179,6 +1219,34 @@ watch(() => routeForm.value.startNode, (newVal) => {
 
 .weather-suggestions li {
   margin: 3px 0;
+}
+
+.provider-status-panel {
+  margin-top: 12px;
+}
+
+.provider-status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.provider-status-message {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.traffic-provider-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 
 /* 路况规避面板 */

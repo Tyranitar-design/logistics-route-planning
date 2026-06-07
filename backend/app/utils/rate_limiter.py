@@ -9,7 +9,7 @@ import time
 from functools import wraps
 from collections import defaultdict
 from threading import Lock
-from flask import request, jsonify, g
+from flask import request, jsonify, g, current_app
 
 
 class RateLimiter:
@@ -74,6 +74,9 @@ def rate_limit(max_requests=100, window_seconds=60, key_func=None):
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
+            if getattr(current_app, 'testing', False):
+                return f(*args, **kwargs)
+
             # 生成限制键
             if key_func:
                 key = key_func()

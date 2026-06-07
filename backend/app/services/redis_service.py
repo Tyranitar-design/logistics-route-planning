@@ -6,15 +6,16 @@ Redis 缓存服务
 - 实时统计缓存
 """
 
+import os
 import redis
 import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 # Redis 配置
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-REDIS_DB = 0
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_DB = int(os.environ.get('REDIS_DB', 0))
 
 # Redis 客户端（延迟初始化）
 _redis_client = None

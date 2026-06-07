@@ -1,5 +1,6 @@
 # Docker Compose 配置 - 物流路径规划系统
-# 完整版：43 项功能 + WebSocket + ML 预测
+# 本地/演示版：Flask 后端 + Vue/Nginx 前端。
+# 生产部署请优先使用 docker-compose.prod.yml + .env.production。
 
 services:
   # ==================== 后端服务 ====================
@@ -16,13 +17,17 @@ services:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
       
-      # 安全密钥（生产环境请修改！）
-      - SECRET_KEY=logistics-secret-key-change-in-production-2026
-      - JWT_SECRET_KEY=jwt-secret-key-change-in-production-2026
+      # 安全密钥（生产环境请通过 .env/.env.production 注入）
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-me}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
       
       # API Keys
-      - AMAP_KEY=e471e7d99965ef1f1a0d4113f580f5db
-      - TIANAPI_KEY=e2c7bbdbce2502c8460aa05ad0d57fe1
+      - AMAP_WEB_KEY=${AMAP_WEB_KEY:-}
+      - AMAP_SERVICE_KEY=${AMAP_SERVICE_KEY:-}
+      - AMAP_KEY=${AMAP_SERVICE_KEY:-}
+      - TIANAPI_KEY=${TIANAPI_KEY:-}
+      - TIANDITU_BROWSER_KEY=${TIANDITU_BROWSER_KEY:-}
+      - TIANDITU_SERVER_KEY=${TIANDITU_SERVER_KEY:-}
       
     volumes:
       # 数据持久化
@@ -31,7 +36,7 @@ services:
       - ./database:/app/database
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -52,7 +57,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/"]
+      test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3

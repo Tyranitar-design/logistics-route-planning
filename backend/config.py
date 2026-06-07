@@ -24,7 +24,7 @@ class Config:
     JWT_HEADER_NAME = 'Authorization'
     JWT_HEADER_TYPE = 'Bearer'
     
-    # 数据库配置 - 默认使用 SQLite
+    # 数据库配置 - PostgreSQL 优先，SQLite 仅作兼容兜底
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
@@ -33,9 +33,16 @@ class Config:
     DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
     import urllib.parse
     ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or f'sqlite:///{ENCODED_PATH}'
+    SQLALCHEMY_DATABASE_URI = (
+        os.environ.get('POSTGRES_DATABASE_URL')
+        or os.environ.get('DATABASE_URL')
+        or f'sqlite:///{ENCODED_PATH}'
+    )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_pre_ping': True,
+    }
     
     # CORS配置
     CORS_ORIGINS = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 
@@ -47,8 +54,8 @@ class Config:
     AMAP_SERVICE_KEY = os.environ.get('AMAP_SERVICE_KEY', '')
     
     # 天地图API配置
-    TIANDITU_BROWSER_KEY = os.environ.get('TIANDITU_BROWSER_KEY', '18188f6432d582c3fb7bdb6f032c2ed2')
-    TIANDITU_SERVER_KEY = os.environ.get('TIANDITU_SERVER_KEY', 'e364fce5933a099cac671f394d392875')
+    TIANDITU_BROWSER_KEY = os.environ.get('TIANDITU_BROWSER_KEY', '')
+    TIANDITU_SERVER_KEY = os.environ.get('TIANDITU_SERVER_KEY', '')
 
 
 class DevelopmentConfig(Config):
@@ -65,7 +72,7 @@ class ProductionConfig(Config):
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'production-secret-key-please-change'
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'production-jwt-secret-please-change'
     
-    # 生产环境优先使用环境变量，没有则使用 SQLite
+    # 生产环境优先使用 PostgreSQL 环境变量，没有则使用兼容库
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
@@ -74,16 +81,24 @@ class ProductionConfig(Config):
     DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
     import urllib.parse
     ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or f'sqlite:///{ENCODED_PATH}'
+    SQLALCHEMY_DATABASE_URI = (
+        os.environ.get('POSTGRES_DATABASE_URL')
+        or os.environ.get('DATABASE_URL')
+        or f'sqlite:///{ENCODED_PATH}'
+    )
 
 
 class DockerConfig(Config):
     """Docker 环境配置"""
     DEBUG = False
     SQLALCHEMY_ECHO = False
-    
-    # Docker 中使用 SQLite
-    SQLALCHEMY_DATABASE_URI = 'sqlite:////app/data/logistics.db'
+
+    # Docker/云部署优先使用 PostgreSQL，未配置时才退回兼容 SQLite。
+    SQLALCHEMY_DATABASE_URI = (
+        os.environ.get('POSTGRES_DATABASE_URL')
+        or os.environ.get('DATABASE_URL')
+        or 'sqlite:////app/data/logistics.db'
+    )
     
     # CORS 配置
     CORS_ORIGINS = ['http://localhost', 'http://localhost:80', 'http://localhost:8080', 

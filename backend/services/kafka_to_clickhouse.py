@@ -8,12 +8,13 @@ Kafka -> ClickHouse 数据消费者
 import json
 import time
 import requests
+import os
 from datetime import datetime
 from kafka import KafkaConsumer
 import threading
 
 # Kafka 配置
-KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
 KAFKA_TOPICS = [
     'logistics.orders',
     'logistics.vehicles',
@@ -22,10 +23,10 @@ KAFKA_TOPICS = [
 ]
 
 # ClickHouse 配置
-CLICKHOUSE_HOST = 'http://localhost:8123'
-CLICKHOUSE_DB = 'logistics'
-CLICKHOUSE_USER = 'admin'
-CLICKHOUSE_PASSWORD = 'admin123'
+CLICKHOUSE_HOST = os.environ.get('CLICKHOUSE_HOST', 'http://localhost:8123')
+CLICKHOUSE_DB = os.environ.get('CLICKHOUSE_DATABASE', 'logistics')
+CLICKHOUSE_USER = os.environ.get('CLICKHOUSE_USER', 'admin')
+CLICKHOUSE_PASSWORD = os.environ.get('CLICKHOUSE_PASSWORD', '')
 
 # 消费者组
 GROUP_ID = 'logistics-clickhouse-consumer'
