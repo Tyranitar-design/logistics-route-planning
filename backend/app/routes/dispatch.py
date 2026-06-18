@@ -8,6 +8,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.dispatch_service import get_dispatch_service
 from app.services.smart_dispatch_service import get_smart_dispatch_service
+from app.services.dispatch_orchestration_service import get_dispatch_orchestration_service
 from app.utils.rate_limiter import rate_limit, RateLimits
 
 dispatch_bp = Blueprint('dispatch', __name__)
@@ -23,6 +24,14 @@ SMART_DISPATCH_TRUTH_CONTRACT = {
         'not_yet_precise_road_distance_or_turn_by_turn_path'
     ),
 }
+
+
+def _current_user_id():
+    try:
+        identity = get_jwt_identity()
+        return int(identity) if identity is not None else None
+    except Exception:
+        return None
 
 
 def _normalize_smart_dispatch_summary(summary, plans, unassigned_orders):
@@ -97,38 +106,23 @@ def auto_dispatch():
         consider_traffic = data.get('consider_traffic', True)
         max_orders = data.get('max_orders_per_vehicle', 5)
         
-        service = get_dispatch_service()
-        result = service.auto_dispatch(
-            order_ids=order_ids,
-            vehicle_ids=vehicle_ids,
-            consider_weather=consider_weather,
-            consider_traffic=consider_traffic,
-            max_orders_per_vehicle=max_orders
+        service = get_dispatch_orchestration_service()
+        result = service.preview(
+            {
+                'order_ids': order_ids,
+                'vehicle_ids': vehicle_ids,
+                'consider_weather': consider_weather,
+                'consider_traffic': consider_traffic,
+                'max_orders_per_vehicle': max_orders,
+                'algorithm': data.get('algorithm', 'balanced'),
+                'weights': data.get('weights', {'cost': 0.4, 'time': 0.3, 'satisfaction': 0.3}),
+                'limit': data.get('limit', data.get('per_page', 100)),
+            },
+            user_id=_current_user_id(),
         )
-        
-        if result.success:
-            return jsonify({
-                'success': True,
-                'plans': [
-                    {
-                        'vehicle_id': p.vehicle_id,
-                        'vehicle_info': p.vehicle_info,
-                        'orders': p.orders,
-                        'route_sequence': p.route_sequence,
-                        'total_distance': p.total_distance,
-                        'total_duration': p.total_duration,
-                        'total_cost': p.total_cost,
-                        'weather_impact': p.weather_impact,
-                        'score': p.score,
-                        'suggestions': p.suggestions
-                    }
-                    for p in result.plans
-                ],
-                'unassigned_orders': result.unassigned_orders,
-                'summary': result.summary
-            })
-        else:
-            return jsonify({'success': False, 'error': result.error}), 400
+
+        status = 200 if result.get('success') else 400
+        return jsonify(result), status
     
     except Exception as e:
         import traceback
@@ -203,49 +197,13 @@ def apply_dispatch():
         应用结果
     """
     try:
-        from app.models import db, Order, Vehicle
-        from datetime import datetime
-        
-        data = request.get_json()
-        plans = data.get('plans', [])
-        
-        if not plans:
-            return jsonify({'success': False, 'error': '请提供调度计划'}), 400
-        
-        results = []
-        
-        for plan in plans:
-            vehicle_id = plan.get('vehicle_id')
-            order_ids = plan.get('order_ids', [])
-            
-            # 更新车辆状态
-            vehicle = Vehicle.query.get(vehicle_id)
-            if vehicle:
-                vehicle.status = 'in_use'
-            
-            # 更新订单状态
-            for order_id in order_ids:
-                order = Order.query.get(order_id)
-                if order:
-                    order.status = 'assigned'
-                    order.vehicle_id = vehicle_id
-                    order.updated_at = datetime.utcnow()
-            
-            results.append({
-                'vehicle_id': vehicle_id,
-                'orders_updated': len(order_ids)
-            })
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'成功分配 {len(results)} 辆车的调度计划',
-            'results': results
-        })
+        data = request.get_json() or {}
+        service = get_dispatch_orchestration_service()
+        result = service.apply(data, user_id=_current_user_id())
+        status = 200 if result.get('success') else 400
+        return jsonify(result), status
     
     except Exception as e:
-        db.session.rollback()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -255,9 +213,66 @@ def preview_dispatch():
     """
     预览调度结果（不实际应用）
     
-    与 /auto 接口相同，但不会修改数据库
+    统一调度预览，不修改原始订单/物流明细。
     """
-    return auto_dispatch()
+    try:
+        data = request.get_json() or {}
+        service = get_dispatch_orchestration_service()
+        result = service.preview(data, user_id=_current_user_id())
+        status = 200 if result.get('success') else 400
+        return jsonify(result), status
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/health', methods=['GET'])
+@jwt_required()
+def dispatch_health():
+    """调度数据健康与可执行性诊断。"""
+    try:
+        service = get_dispatch_orchestration_service()
+        return jsonify(service.health())
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/waves', methods=['POST'])
+@jwt_required()
+def create_dispatch_wave():
+    """创建可计算的调度波次。"""
+    try:
+        data = request.get_json() or {}
+        service = get_dispatch_orchestration_service()
+        return jsonify(service.create_wave(data))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/scenarios', methods=['GET'])
+@jwt_required()
+def list_dispatch_scenarios():
+    """列出最近调度场景。"""
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        service = get_dispatch_orchestration_service()
+        return jsonify(service.list_scenarios(limit=limit))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/scenarios/<int:scenario_id>', methods=['GET'])
+@jwt_required()
+def get_dispatch_scenario(scenario_id):
+    """查看调度场景详情。"""
+    try:
+        service = get_dispatch_orchestration_service()
+        result = service.scenario_detail(scenario_id)
+        status = 200 if result.get('success') else 404
+        return jsonify(result), status
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @dispatch_bp.route('/smart', methods=['POST'])
@@ -302,53 +317,23 @@ def smart_dispatch():
         consider_traffic = data.get('consider_traffic', True)
         algorithm = data.get('algorithm', 'genetic')
         
-        service = get_smart_dispatch_service()
-        result = service.smart_dispatch(
-            order_ids=order_ids,
-            vehicle_ids=vehicle_ids,
-            weights=weights,
-            consider_weather=consider_weather,
-            consider_traffic=consider_traffic,
-            algorithm=algorithm
+        service = get_dispatch_orchestration_service()
+        result = service.preview(
+            {
+                'order_ids': order_ids,
+                'vehicle_ids': vehicle_ids,
+                'weights': weights,
+                'consider_weather': consider_weather,
+                'consider_traffic': consider_traffic,
+                'algorithm': algorithm,
+                'limit': data.get('limit', data.get('per_page', 100)),
+                'max_orders_per_vehicle': data.get('max_orders_per_vehicle', 5),
+                'use_precise_distance': data.get('use_precise_distance', True),
+            },
+            user_id=_current_user_id(),
         )
-        
-        if result.success:
-            summary = _normalize_smart_dispatch_summary(
-                result.summary,
-                result.plans,
-                result.unassigned_orders,
-            )
-            return jsonify({
-                'success': True,
-                'plans': [
-                    {
-                        'vehicle_id': p.vehicle_id,
-                        'vehicle_info': p.vehicle_info,
-                        'orders': p.orders,
-                        'route_sequence': p.route_sequence,
-                        'total_distance': p.total_distance,
-                        'total_duration': p.total_duration,
-                        'total_cost': p.total_cost,
-                        'fuel_cost': p.fuel_cost,
-                        'toll_cost': p.toll_cost,
-                        'weather_impact': p.weather_impact,
-                        'score': p.score,
-                        'cost_score': p.cost_score,
-                        'time_score': p.time_score,
-                        'satisfaction_score': p.satisfaction_score,
-                        'suggestions': p.suggestions
-                    }
-                    for p in result.plans
-                ],
-                'unassigned_orders': result.unassigned_orders,
-                'summary': summary,
-                'algorithm': result.algorithm,
-                'generations': result.generations,
-                'convergence_score': result.convergence_score,
-                **SMART_DISPATCH_TRUTH_CONTRACT,
-            })
-        else:
-            return jsonify({'success': False, 'error': result.error}), 400
+        status = 200 if result.get('success') else 400
+        return jsonify(result), status
     
     except Exception as e:
         import traceback
@@ -364,11 +349,11 @@ def get_algorithms():
         'success': True,
         'algorithms': [
             {
-                'id': 'genetic',
-                'name': '遗传算法',
-                'description': '基于自然选择的多目标优化算法，适合复杂场景',
-                'best_for': '多目标优化、大规模订单',
-                'performance': '较慢但结果更优'
+                'id': 'balanced',
+                'name': '均衡策略',
+                'description': '综合考虑距离、容量、成本，当前生产默认策略',
+                'best_for': '真实数据调度、稳定预览',
+                'performance': '快速且可解释'
             },
             {
                 'id': 'greedy',
@@ -378,11 +363,32 @@ def get_algorithms():
                 'performance': '快速但可能不是全局最优'
             },
             {
-                'id': 'balanced',
-                'name': '均衡策略',
-                'description': '综合考虑距离、容量、成本',
-                'best_for': '一般场景',
-                'performance': '速度和质量的平衡'
+                'id': 'capacity_first',
+                'name': '载重优先',
+                'description': '优先提升车辆装载率，适合运力紧张波次',
+                'best_for': '车辆不足、拼单场景',
+                'performance': '快速且偏装载率'
+            },
+            {
+                'id': 'ortools',
+                'name': 'OR-Tools',
+                'description': '求解器目录已接入；当前按可用性进入影子对比',
+                'best_for': '后续约束求解主链路',
+                'performance': '可用时快速'
+            },
+            {
+                'id': 'alns',
+                'name': 'ALNS',
+                'description': '自适应大邻域搜索；当前按可用性进入影子对比',
+                'best_for': '大规模 VRP 迭代优化',
+                'performance': '适合中大波次'
+            },
+            {
+                'id': 'genetic',
+                'name': '遗传算法',
+                'description': '保留为对比算法，不再作为生产默认主链路',
+                'best_for': '教学演示、对照实验',
+                'performance': '较慢'
             }
         ],
         'weight_options': {
@@ -546,37 +552,10 @@ def compare_solvers():
     """
     对比多个求解器
     """
-    from app.models import Order, Vehicle, Node
-    from app.services.smart_dispatch_service_v2 import smart_dispatch_v2
-    
     try:
         data = request.get_json() or {}
-        
-        order_ids = data.get('order_ids', [])
-        vehicle_ids = data.get('vehicle_ids', [])
-        solvers = data.get('solvers', ['genetic', 'ortools'])
-        time_limit = data.get('time_limit', 30)
-        
-        orders = Order.query.filter(Order.id.in_(order_ids)).all() if order_ids else Order.query.filter(Order.status == 'pending').limit(10).all()
-        vehicles = Vehicle.query.filter(Vehicle.id.in_(vehicle_ids)).all() if vehicle_ids else Vehicle.query.filter(Vehicle.status == 'available').limit(5).all()
-        nodes = Node.query.all()
-        
-        depot = Node.query.filter(Node.type == 'depot').first()
-        if not depot:
-            depot = nodes[0] if nodes else None
-        
-        if not depot:
-            return jsonify({'success': False, 'error': '找不到仓库节点'}), 400
-        
-        result = smart_dispatch_v2.compare_solvers(
-            orders=orders,
-            vehicles=vehicles,
-            nodes=nodes,
-            depot_node=depot,
-            solver_types=solvers,
-            time_limit=time_limit
-        )
-        
+        service = get_dispatch_orchestration_service()
+        result = service.compare_solvers(data)
         return jsonify(result)
     
     except Exception as e:

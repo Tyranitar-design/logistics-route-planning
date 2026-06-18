@@ -19,6 +19,7 @@ from app.models.audit import AuditLog
 from app.models.oil_price import OilPrice
 from app.models.network import NetworkScenario, NetworkNode, NetworkEdge
 from app.models.layered_data import DataImportBatch, RawLogisticsShipmentRecord, ShipmentFact
+from app.models.dispatch import DispatchScenario, DispatchAssignment
 
 # 导出所有模型
 __all__ = [
@@ -44,4 +45,6 @@ __all__ = [
     'DataImportBatch',
     'RawLogisticsShipmentRecord',
     'ShipmentFact',
+    'DispatchScenario',
+    'DispatchAssignment',
 ]

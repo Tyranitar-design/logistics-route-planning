@@ -21,7 +21,7 @@ export function autoDispatch(params = {}) {
 }
 
 /**
- * 智能调度 - 遗传算法优化
+ * 智能调度 - 统一调度引擎
  * @param {Object} params - 调度参数
  * @param {number[]} params.order_ids - 订单ID列表
  * @param {number[]} params.vehicle_ids - 车辆ID列表
@@ -31,7 +31,8 @@ export function autoDispatch(params = {}) {
  * @param {number} params.weights.satisfaction - 满意度权重 (0-1)
  * @param {boolean} params.consider_weather - 是否考虑天气
  * @param {boolean} params.consider_traffic - 是否考虑路况
- * @param {string} params.algorithm - 算法选择 ('genetic' | 'greedy' | 'balanced')
+ * @param {string} params.algorithm - 算法选择 ('balanced' | 'greedy' | 'capacity_first' | 'genetic')
+ * @param {string} params.data_source - 订单来源 ('auto' | 'shipment_fact' | 'orders')
  */
 export function smartDispatch(params = {}) {
   return request({
@@ -48,6 +49,59 @@ export function getAlgorithms() {
   return request({
     url: '/dispatch/algorithms',
     method: 'get'
+  })
+}
+
+/**
+ * 获取调度健康诊断
+ */
+export function getDispatchHealth() {
+  return request({
+    url: '/dispatch/health',
+    method: 'get'
+  })
+}
+
+/**
+ * 创建调度波次
+ */
+export function createDispatchWave(params = {}) {
+  return request({
+    url: '/dispatch/waves',
+    method: 'post',
+    data: params
+  })
+}
+
+/**
+ * 获取调度场景
+ */
+export function getDispatchScenario(id) {
+  return request({
+    url: `/dispatch/scenarios/${id}`,
+    method: 'get'
+  })
+}
+
+/**
+ * 获取最近调度场景
+ */
+export function listDispatchScenarios(params = {}) {
+  return request({
+    url: '/dispatch/scenarios',
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 对比求解器
+ */
+export function compareDispatchSolvers(params = {}) {
+  return request({
+    url: '/dispatch/compare-solvers',
+    method: 'post',
+    data: params
   })
 }
 
@@ -79,12 +133,12 @@ export function getMergeSuggestions(params = {}) {
 
 /**
  * 应用调度计划
- * @param {Object[]} plans - 调度计划列表
+ * @param {Object|Object[]} payload - 调度场景或计划列表
  */
-export function applyDispatch(plans) {
+export function applyDispatch(payload) {
   return request({
     url: '/dispatch/apply',
     method: 'post',
-    data: { plans }
+    data: Array.isArray(payload) ? { plans: payload } : payload
   })
 }

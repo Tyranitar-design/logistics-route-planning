@@ -30,6 +30,23 @@ vehicles                        2
 
 大数据平台目录仍保留在仓库中，但当前腾讯云核心部署只启动 PostgreSQL、Redis、后端、前端四个核心服务。
 
+## 智能调度口径
+
+当前智能调度已经切换为统一调度引擎：
+
+- 默认 `data_source=auto`，优先读取 PostgreSQL `shipment_facts` 真实物流明细；仅在无可用事实数据或显式选择时回退旧 `orders` 表。
+- 5 万明细不直接一次性求解，前端与 API 通过 dispatch wave 控制波次数量与筛选条件。
+- `/api/dispatch/preview` 只生成预览，不修改原始物流明细。
+- `/api/dispatch/apply` 确认执行后写入 `dispatch_scenarios` / `dispatch_assignments`，用于回放、审计和后续 AI 训练样本。
+- AI/DQL/DQN 当前为 shadow mode，只提供风险、ETA、策略评分元数据；容量、车辆、唯一分配等硬约束仍由调度引擎保底。
+
+后端启动时会使用 `checkfirst=True` 自动确保以下增量表存在，不会改写 `shipment_facts`：
+
+```text
+dispatch_scenarios
+dispatch_assignments
+```
+
 ## 本地启动
 
 后端：
@@ -82,6 +99,19 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 curl http://127.0.0.1:5000/api/health
 docker compose --env-file .env.production -f docker-compose.prod.yml ps
 ```
+
+登录后建议继续验证调度链路：
+
+```bash
+TOKEN=<login-access-token>
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5000/api/dispatch/health
+curl -X POST http://127.0.0.1:5000/api/dispatch/preview \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":20,"data_source":"auto","algorithm":"balanced","use_precise_distance":false}'
+```
+
+预期响应应包含 `plans`、`unassigned_orders`、`diagnostics`、`solver`、`data_source`、`distance_source`、`provider_status`、`authenticity_level`。如果车辆只有少量运营运力，未分配原因应出现在 `diagnostics.reason_counts` 或 `unassigned_orders[].reason` 中，而不是无解释的 0 单结果。
 
 ## 高德地图与天气
 

@@ -38,6 +38,16 @@ def create_app(config_name='default'):
     jwt.init_app(app)
     limiter.init_app(app)
 
+    # Ensure additive dispatch tables exist for preview/apply persistence.
+    # This is checkfirst-only and does not mutate existing logistics facts.
+    try:
+        with app.app_context():
+            from app.models.dispatch import DispatchScenario, DispatchAssignment
+            DispatchScenario.__table__.create(bind=db.engine, checkfirst=True)
+            DispatchAssignment.__table__.create(bind=db.engine, checkfirst=True)
+    except Exception as exc:
+        print(f"[Dispatch] table ensure skipped: {exc}")
+
     # JWT错误处理
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):

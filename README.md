@@ -19,7 +19,7 @@
 
 - 指挥总览：订单、节点、路线、车辆、风险提示实时聚合
 - 地图视图：节点空间态势、路线规划、天气与路况联动
-- 调度执行：智能调度、轨迹监控、订单/车辆/节点/路线管理
+- 调度执行：智能调度控制台、波次预览、场景应用、轨迹监控、订单/车辆/节点/路线管理
 - 优化决策：多目标优化、Pareto 前沿、可解释路线方案
 - 数据底座：PostgreSQL/PostGIS 为主库，已验证 5 万条真实物流明细
 
@@ -72,10 +72,12 @@ PostgreSQL/PostGIS + Redis + Flask Backend + Vue/Nginx Frontend
 ## ✨ 系统特色
 
 ### 🧠 智能调度
-- **遗传算法**自动分配订单到最优车辆
-- **多目标优化**（距离最短、时间最少、成本最低）
-- **高级算法**：蚁群 (ACO)、粒子群 (PSO)、深度强化学习 (DRL)
-- **权重可调**：用户可调节各优化目标的重要性
+- **统一数据适配**：默认优先读取 PostgreSQL `shipment_facts` 真实物流明细，兼容旧 `orders` 表
+- **调度波次**：按订单源、城市、搜索词、数量上限创建可计算 dispatch wave，避免 5 万单一次性求解
+- **可解释预览/执行**：预览不修改原始业务明细，确认后写入 `dispatch_scenarios` / `dispatch_assignments`
+- **求解策略**：当前生产默认使用可解释的 `balanced` / `greedy` / `capacity_first` 波次调度，OR-Tools、ALNS、GA 进入求解器对比与影子评估
+- **AI 增强层**：ETA、延误风险、DQL/DQN 暂处于 shadow mode，只参与评分解释和后续训练闭环，不直接替代容量/时间窗等硬约束
+- **真相元数据**：接口统一返回 `data_source`、`distance_source`、`provider_status`、`authenticity_level`、`fallback_reason`
 
 ### 📊 数据分析
 - **机器学习预测**：LSTM+Prophet 双模型融合，准确率 85%+
@@ -117,8 +119,8 @@ PostgreSQL/PostGIS + Redis + Flask Backend + Vue/Nginx Frontend
 9. ✅ **供应商管理** - 档案、绩效评估、合同管理、风险监控
 
 ### 二、智能调度模块（5 项）
-10. ✅ **遗传算法调度** - 自动订单分配、多目标加权
-11. ✅ **高级路径优化** - ACO 蚁群、PSO 粒子群、DRL 强化学习
+10. ✅ **统一智能调度** - `shipment_facts` / `orders` 双源适配、波次预览、场景应用
+11. ✅ **求解器对比** - 贪心、均衡、载重优先、OR-Tools/ALNS/GA 影子对比
 12. ✅ **敏捷优化** - 模拟退火、禁忌搜索、智能拼单
 13. ✅ **多目标优化** - Pareto 前沿、方案对比
 14. ✅ **订单路线推荐** - 路径规划、成本预估、路况规避
@@ -353,7 +355,13 @@ DELETE /api/resource/:id      # 删除
 | 认证 | `/api/auth/register` | POST | 用户注册 |
 | 订单 | `/api/orders` | GET/POST | 订单列表/创建 |
 | 订单 | `/api/orders/:id` | GET/PUT/DELETE | 订单详情/更新/删除 |
-| 调度 | `/api/dispatch/smart` | POST | 遗传算法智能调度 |
+| 调度 | `/api/dispatch/health` | GET | 调度数据健康诊断 |
+| 调度 | `/api/dispatch/waves` | POST | 创建调度波次 |
+| 调度 | `/api/dispatch/preview` | POST | 预览调度方案，不修改业务明细 |
+| 调度 | `/api/dispatch/apply` | POST | 确认执行调度场景 |
+| 调度 | `/api/dispatch/smart` | POST | 统一智能调度入口 |
+| 调度 | `/api/dispatch/compare-solvers` | POST | 求解器对比 |
+| 调度 | `/api/dispatch/scenarios/:id` | GET | 查看历史调度场景 |
 | 调度 | `/api/multi-objective/optimize` | POST | 多目标路径优化 |
 | 算法 | `/api/advanced-route/optimize` | POST | 高级算法优化 |
 | 分析 | `/api/analytics/dashboard` | GET | 仪表盘数据 |
@@ -403,11 +411,13 @@ pip install -r requirements.txt
 2. 在[高德开放平台](https://lbs.amap.com/)控制台设置 Web 服务 Key
 3. 检查网络访问高德 API
 
-### Q4: 遗传算法返回空结果
+### Q4: 智能调度显示 0 单或没有结果
 **A**: 检查以下问题：
-- 数据库中是否有足够的订单和车辆数据
-- 是否设置了合理的权重值
-- 查看后端日志中的异常信息
+- 先请求 `/api/dispatch/health`，确认 `shipment_facts` 可调度数量和车辆数量
+- 当前真实数据有 5 万物流明细，但车辆/运力配置可能不足，页面会展示不可分配原因
+- 调度控制台默认 `data_source=auto`，会优先使用真实 `shipment_facts`；如需旧表测试可切换为 `orders`
+- 如果高德/缓存不可用，接口会降级到 `haversine_corrected` 并返回 `provider_status` / `fallback_reason`
+- DQL/DQN 当前是 shadow mode，不会直接覆盖约束求解结果
 
 ### Q5: WebSocket 连接不稳定
 **A**: 确保心跳机制正常工作，检查：
@@ -459,6 +469,18 @@ docker-compose -p logistics restart
 
 **详细部署文档**: [`docs/DOCKER_DEPLOY.md`](docs/DOCKER_DEPLOY.md)
 
+生产部署推荐使用 `docker-compose.prod.yml`，后端启动时会以 `checkfirst=True` 确保新增调度场景表存在：
+
+- `dispatch_scenarios`
+- `dispatch_assignments`
+
+部署后建议至少验证：
+
+```bash
+curl http://127.0.0.1:5000/api/health
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:5000/api/dispatch/health
+```
+
 ---
 
 ## 📚 相关文档
@@ -503,7 +525,7 @@ MIT License
 
 ---
 
-**最后更新**: 2026-04-12
+**最后更新**: 2026-06-18
 **维护者**: 小彩 💫
 **项目状态**: ✅ 功能完整，已部署上云
 

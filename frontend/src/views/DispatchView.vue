@@ -1,343 +1,290 @@
 <template>
-  <div class="dispatch-view">
-    <el-row :gutter="20">
-      <!-- 左侧：订单选择 -->
-      <el-col :span="8">
-        <el-card>
+  <div class="dispatch-console">
+    <section class="health-band">
+      <div class="health-copy">
+        <span class="section-kicker">COMMAND LAYER</span>
+        <h2>智能调度控制台</h2>
+        <p>{{ healthMessage }}</p>
+      </div>
+      <div class="health-metrics">
+        <div class="metric">
+          <span>订单源</span>
+          <strong>{{ sourceLabel(dispatchHealth?.data_source) }}</strong>
+        </div>
+        <div class="metric">
+          <span>可调度订单</span>
+          <strong>{{ dispatchHealth?.dispatchable_orders || 0 }}</strong>
+        </div>
+        <div class="metric">
+          <span>可用车辆</span>
+          <strong>{{ dispatchHealth?.vehicle_source?.available_vehicles || 0 }}</strong>
+        </div>
+        <div class="metric">
+          <span>运力吨位</span>
+          <strong>{{ formatNumber(dispatchHealth?.vehicle_source?.total_capacity_weight_tons) }}t</strong>
+        </div>
+      </div>
+    </section>
+
+    <el-alert
+      v-if="diagnosticRecommendations.length"
+      class="truth-alert"
+      type="info"
+      :closable="false"
+      show-icon
+    >
+      <template #title>{{ diagnosticRecommendations.join('；') }}</template>
+    </el-alert>
+
+    <el-row :gutter="18" class="main-grid">
+      <el-col :xs="24" :lg="7">
+        <el-card class="panel-card">
           <template #header>
             <div class="card-header">
-              <span>📦 待调度订单</span>
-              <el-tag>{{ pendingOrders.length }} 单</el-tag>
+              <span>调度波次</span>
+              <el-tag type="success">{{ pendingOrders.length }} 单</el-tag>
             </div>
           </template>
-          
-          <!-- 筛选 -->
-          <div class="filter-bar">
-            <el-input
-              v-model="orderSearch"
-              placeholder="搜索订单号/客户"
+
+          <div class="filter-grid">
+            <el-input v-model="waveFilters.search" placeholder="订单/客户" clearable size="small" />
+            <el-input v-model="waveFilters.city" placeholder="城市" clearable size="small" />
+            <el-select v-model="waveFilters.data_source" size="small" class="source-select">
+              <el-option label="自动优先真实明细" value="auto" />
+              <el-option label="真实明细" value="shipment_fact" />
+              <el-option label="旧订单表" value="orders" />
+            </el-select>
+            <el-input-number
+              v-model="waveFilters.limit"
+              :min="1"
+              :max="500"
               size="small"
-              clearable
-              style="width: 200px"
+              controls-position="right"
+              class="limit-input"
             />
-            <el-select v-model="priorityFilter" placeholder="优先级" size="small" clearable style="width: 100px">
-              <el-option label="全部" value="" />
-              <el-option label="紧急" value="urgent" />
-              <el-option label="加急" value="express" />
-              <el-option label="普通" value="normal" />
-            </el-select>
           </div>
-          
-          <!-- 订单列表 -->
-          <div class="order-list">
-            <!-- 快速选择下拉 -->
-            <el-select
-              v-model="selectedOrders"
-              multiple
-              filterable
-              collapse-tags
-              collapse-tags-tooltip
-              placeholder="选择要调度的订单"
-              style="width: 100%; margin-bottom: 10px"
-            >
-              <el-option
-                v-for="order in filteredOrders"
-                :key="order.id"
-                :label="`${order.order_number} - ${order.customer_name} (${order.weight || 0}吨)`"
-                :value="order.id"
-              >
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <span>{{ order.order_number }}</span>
-                  <span style="color: #909399; font-size: 12px;">{{ order.customer_name }}</span>
-                  <el-tag v-if="order.priority !== 'normal'" :type="getPriorityType(order.priority)" size="small">
-                    {{ getPriorityText(order.priority) }}
-                  </el-tag>
-                </div>
-              </el-option>
-            </el-select>
-            
-            <!-- 详情列表（可选查看） -->
-            <el-checkbox-group v-model="selectedOrders">
-              <div
-                v-for="order in filteredOrders"
-                :key="order.id"
-                class="order-item"
-                :class="{ 'selected': selectedOrders.includes(order.id) }"
-              >
-                <el-checkbox :value="order.id">
-                  <div class="order-info">
-                    <div class="order-header">
-                      <span class="order-number">{{ order.order_number }}</span>
-                      <el-tag 
-                        :type="getPriorityType(order.priority)" 
-                        size="small"
-                        v-if="order.priority !== 'normal'"
-                      >
-                        {{ getPriorityText(order.priority) }}
-                      </el-tag>
-                    </div>
-                    <div class="order-detail">
-                      <span>{{ order.customer_name }}</span>
-                      <span>{{ order.weight || 0 }}吨</span>
-                    </div>
-                  </div>
-                </el-checkbox>
-              </div>
-            </el-checkbox-group>
-          </div>
-          
-          <div class="action-bar">
+
+          <div class="toolbar-row">
+            <el-button size="small" @click="loadDispatchWave" :loading="waveLoading">生成波次</el-button>
             <el-button size="small" @click="selectAllOrders">全选</el-button>
             <el-button size="small" @click="selectedOrders = []">清空</el-button>
           </div>
-        </el-card>
-        
-        <!-- 合并建议 -->
-        <el-card style="margin-top: 15px" v-if="mergeClusters.length > 0">
-          <template #header>
-            <span>🔗 合并配送建议</span>
-          </template>
-          <div v-for="(cluster, index) in mergeClusters" :key="index" class="merge-cluster">
-            <div class="cluster-header">
-              <el-tag type="success">可合并 {{ cluster.orders.length }} 单</el-tag>
-              <el-button 
-                size="small" 
-                text 
-                @click="applyMergeCluster(cluster)"
-              >
-                应用
-              </el-button>
-            </div>
-            <div class="cluster-info">
-              总重量: {{ cluster.total_weight?.toFixed(1) || 0 }}吨
+
+          <el-select
+            v-model="selectedOrders"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="默认使用当前波次"
+            class="full-select"
+          >
+            <el-option
+              v-for="order in filteredOrders"
+              :key="order.id"
+              :label="`${order.order_number} - ${order.customer_name || order.destination_name || '客户'} (${formatWeight(order)}t)`"
+              :value="order.id"
+            />
+          </el-select>
+
+          <div class="order-list">
+            <div
+              v-for="order in filteredOrders"
+              :key="order.id"
+              class="order-item"
+              :class="{ selected: selectedOrders.includes(order.id) }"
+              @click="toggleOrder(order.id)"
+            >
+              <el-checkbox :model-value="selectedOrders.includes(order.id)" @click.stop @change="toggleOrder(order.id)" />
+              <div class="order-info">
+                <div class="order-title">
+                  <span>{{ order.order_number }}</span>
+                  <el-tag size="small" :type="order.data_source === 'shipment_fact' ? 'success' : 'info'">
+                    {{ sourceLabel(order.data_source) }}
+                  </el-tag>
+                </div>
+                <div class="order-meta">
+                  <span>{{ order.origin_name || '未知起点' }}</span>
+                  <span>{{ order.destination_name || '未知终点' }}</span>
+                  <span>{{ formatWeight(order) }}t</span>
+                </div>
+              </div>
             </div>
           </div>
         </el-card>
       </el-col>
-      
-      <!-- 中间：调度配置 -->
-      <el-col :span="8">
-        <el-card>
+
+      <el-col :xs="24" :lg="8">
+        <el-card class="panel-card">
           <template #header>
-            <span>⚙️ 调度配置</span>
+            <div class="card-header">
+              <span>调度配置</span>
+              <el-tag :type="truthTagType">{{ authenticityLabel }}</el-tag>
+            </div>
           </template>
-          
-          <el-form :model="dispatchConfig" label-width="120px" size="small">
+
+          <el-form :model="dispatchConfig" label-width="112px" size="small">
             <el-form-item label="调度算法">
-              <el-radio-group v-model="dispatchConfig.algorithm">
-                <el-radio-button 
-                  v-for="algo in algorithms" 
-                  :key="algo.id" 
-                  :value="algo.id"
-                >
-                  {{ algo.name }}
-                </el-radio-button>
-              </el-radio-group>
-              <div class="config-hint" style="margin-top: 5px">
-                {{ algorithms.find(a => a.id === dispatchConfig.algorithm)?.description }}
-              </div>
-            </el-form-item>
-            
-            <el-divider content-position="left">多目标权重</el-divider>
-            
-            <el-form-item label="成本权重">
-              <el-slider 
-                v-model="dispatchConfig.weights.cost" 
-                :min="0" 
-                :max="1" 
-                :step="0.1"
-                show-input
-                :show-input-controls="false"
-              />
-            </el-form-item>
-            
-            <el-form-item label="时间权重">
-              <el-slider 
-                v-model="dispatchConfig.weights.time" 
-                :min="0" 
-                :max="1" 
-                :step="0.1"
-                show-input
-                :show-input-controls="false"
-              />
-            </el-form-item>
-            
-            <el-form-item label="满意度权重">
-              <el-slider 
-                v-model="dispatchConfig.weights.satisfaction" 
-                :min="0" 
-                :max="1" 
-                :step="0.1"
-                show-input
-                :show-input-controls="false"
-              />
-            </el-form-item>
-            
-            <el-divider content-position="left">调度选项</el-divider>
-            
-            <el-form-item label="考虑天气">
-              <el-switch v-model="dispatchConfig.consider_weather" />
-              <span class="config-hint">根据天气调整运输时间</span>
-            </el-form-item>
-            
-            <el-form-item label="考虑路况">
-              <el-switch v-model="dispatchConfig.consider_traffic" />
-              <span class="config-hint">避开拥堵路段</span>
-            </el-form-item>
-            
-            <el-form-item label="每车最大订单">
-              <el-input-number 
-                v-model="dispatchConfig.max_orders_per_vehicle" 
-                :min="1" 
-                :max="10"
-              />
-            </el-form-item>
-            
-            <el-divider />
-            
-            <el-form-item label="选择车辆">
-              <el-select 
-                v-model="selectedVehicles" 
-                multiple 
-                placeholder="默认使用所有可用车辆"
-                style="width: 100%"
-              >
+              <el-select v-model="dispatchConfig.algorithm" class="full-select">
                 <el-option
-                  v-for="v in availableVehicles"
-                  :key="v.id"
-                  :label="`${v.plate_number} (${v.capacity_weight}吨)`"
-                  :value="v.id"
+                  v-for="algo in algorithms"
+                  :key="algo.id"
+                  :label="`${algo.name} - ${algo.performance || ''}`"
+                  :value="algo.id"
+                />
+              </el-select>
+              <div class="config-hint">{{ currentAlgorithm?.description }}</div>
+            </el-form-item>
+
+            <el-form-item label="选择车辆">
+              <el-select v-model="selectedVehicles" multiple placeholder="默认全部可用车辆" class="full-select">
+                <el-option
+                  v-for="vehicle in availableVehicles"
+                  :key="vehicle.id"
+                  :label="`${vehicle.plate_number} (${vehicleCapacity(vehicle)}t)`"
+                  :value="vehicle.id"
                 />
               </el-select>
             </el-form-item>
+
+            <el-form-item label="每车上限">
+              <el-input-number v-model="dispatchConfig.max_orders_per_vehicle" :min="1" :max="50" />
+            </el-form-item>
+
+            <el-form-item label="真实距离">
+              <el-switch v-model="dispatchConfig.use_precise_distance" />
+              <span class="config-hint">小波次优先 provider，大波次自动降级</span>
+            </el-form-item>
+
+            <el-divider content-position="left">目标权重</el-divider>
+
+            <el-form-item label="成本">
+              <el-slider v-model="dispatchConfig.weights.cost" :min="0" :max="1" :step="0.1" show-input :show-input-controls="false" />
+            </el-form-item>
+            <el-form-item label="时间">
+              <el-slider v-model="dispatchConfig.weights.time" :min="0" :max="1" :step="0.1" show-input :show-input-controls="false" />
+            </el-form-item>
+            <el-form-item label="满意度">
+              <el-slider v-model="dispatchConfig.weights.satisfaction" :min="0" :max="1" :step="0.1" show-input :show-input-controls="false" />
+            </el-form-item>
           </el-form>
-          
+
           <div class="config-actions">
-            <el-button type="primary" @click="handlePreview" :loading="previewLoading">
-              👁️ 预览调度
-            </el-button>
-            <el-button type="success" @click="handleAutoDispatch" :loading="dispatchLoading">
-              🚀 智能调度
-            </el-button>
+            <el-button type="primary" @click="handlePreview" :loading="previewLoading">预览调度</el-button>
+            <el-button type="success" @click="handleSmartDispatch" :loading="dispatchLoading">智能调度</el-button>
+            <el-button @click="handleCompareSolvers" :loading="compareLoading">求解器对比</el-button>
           </div>
         </el-card>
-        
-        <!-- 调度汇总 -->
-        <el-card style="margin-top: 15px" v-if="dispatchSummary">
+
+        <el-card class="panel-card summary-card" v-if="dispatchSummary">
           <template #header>
-            <span>📊 调度汇总</span>
+            <div class="card-header">
+              <span>调度汇总</span>
+              <el-tag>{{ activeScenarioCode || '预览' }}</el-tag>
+            </div>
           </template>
           <el-descriptions :column="2" size="small" border>
-            <el-descriptions-item label="已分配订单">
-              {{ dispatchSummary.total_orders_assigned }} 单
-            </el-descriptions-item>
-            <el-descriptions-item label="未分配订单">
-              {{ dispatchSummary.total_orders_unassigned }} 单
-            </el-descriptions-item>
-            <el-descriptions-item label="使用车辆">
-              {{ dispatchSummary.total_vehicles_used }} 辆
-            </el-descriptions-item>
-            <el-descriptions-item label="总里程">
-              {{ dispatchSummary.total_distance_km }} 公里
-            </el-descriptions-item>
-            <el-descriptions-item label="总成本" :span="2">
-              <span class="cost">{{ dispatchSummary.total_cost }} 元</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="平均成本" :span="2">
-              {{ dispatchSummary.average_cost_per_order }} 元/单
-            </el-descriptions-item>
+            <el-descriptions-item label="已分配">{{ dispatchSummary.total_orders_assigned || dispatchSummary.assigned_orders }} 单</el-descriptions-item>
+            <el-descriptions-item label="未分配">{{ dispatchSummary.total_orders_unassigned || dispatchSummary.unassigned_orders }} 单</el-descriptions-item>
+            <el-descriptions-item label="使用车辆">{{ dispatchSummary.total_vehicles_used || dispatchSummary.vehicles_used }} 辆</el-descriptions-item>
+            <el-descriptions-item label="平均载重率">{{ percent(dispatchSummary.average_load_utilization) }}</el-descriptions-item>
+            <el-descriptions-item label="总里程">{{ formatNumber(dispatchSummary.total_distance_km || dispatchSummary.total_distance) }} 公里</el-descriptions-item>
+            <el-descriptions-item label="总成本"><span class="cost">{{ formatNumber(dispatchSummary.total_cost) }} 元</span></el-descriptions-item>
           </el-descriptions>
         </el-card>
       </el-col>
-      
-      <!-- 右侧：调度结果 -->
-      <el-col :span="8">
-        <el-card>
+
+      <el-col :xs="24" :lg="9">
+        <el-card class="panel-card result-card">
           <template #header>
             <div class="card-header">
-              <span>🚚 调度结果</span>
-              <el-button 
-                v-if="dispatchPlans.length > 0"
-                type="success" 
-                size="small"
-                @click="handleApplyAll"
-                :loading="applyLoading"
-              >
-                确认执行
-              </el-button>
+              <span>调度结果</span>
+              <el-button v-if="dispatchPlans.length" type="success" size="small" @click="handleApplyAll" :loading="applyLoading">确认执行</el-button>
             </div>
           </template>
-          
-          <div v-if="dispatchPlans.length === 0" class="empty-state">
+
+          <div v-if="!dispatchPlans.length" class="empty-state">
             <span class="empty-icon">📋</span>
-            <p>点击「预览调度」查看结果</p>
+            <p>生成波次后点击预览，系统会返回可解释方案</p>
           </div>
-          
-          <div v-else class="plan-list">
-            <el-collapse v-model="activePlan">
-              <el-collapse-item
-                v-for="(plan, index) in dispatchPlans"
-                :key="plan.vehicle_id"
-                :name="index"
-              >
-                <template #title>
-                  <div class="plan-title">
-                    <span class="vehicle-name">{{ plan.vehicle_info?.plate_number }}</span>
-                    <el-tag size="small">{{ plan.orders.length }} 单</el-tag>
-                    <el-tag type="warning" size="small">{{ plan.total_cost }} 元</el-tag>
-                  </div>
-                </template>
-                
-                <div class="plan-detail">
-                  <el-descriptions :column="2" size="small">
-                    <el-descriptions-item label="总距离">
-                      {{ plan.total_distance }} 公里
-                    </el-descriptions-item>
-                    <el-descriptions-item label="预计时长">
-                      {{ plan.total_duration?.toFixed(1) }} 小时
-                    </el-descriptions-item>
-                    <el-descriptions-item label="载重">
-                      {{ plan.vehicle_info?.capacity_weight }} 吨
-                    </el-descriptions-item>
-                    <el-descriptions-item label="评分">
-                      {{ plan.score }}
-                    </el-descriptions-item>
-                  </el-descriptions>
-                  
-                  <!-- 分配的订单 -->
-                  <div class="assigned-orders">
-                    <h5>分配订单：</h5>
-                    <el-tag 
-                      v-for="order in plan.orders" 
-                      :key="order.id"
-                      style="margin: 2px"
-                    >
-                      {{ order.order_number }}
-                    </el-tag>
-                  </div>
-                  
-                  <!-- 建议 -->
-                  <div v-if="plan.suggestions?.length > 0" class="plan-suggestions">
-                    <el-alert type="info" :closable="false">
-                      <ul>
-                        <li v-for="(s, i) in plan.suggestions" :key="i">{{ s }}</li>
-                      </ul>
-                    </el-alert>
-                  </div>
+
+          <el-collapse v-else v-model="activePlan" class="plan-list">
+            <el-collapse-item v-for="(plan, index) in dispatchPlans" :key="plan.vehicle_id" :name="index">
+              <template #title>
+                <div class="plan-title">
+                  <strong>{{ plan.vehicle_info?.plate_number }}</strong>
+                  <el-tag size="small">{{ plan.orders?.length || 0 }} 单</el-tag>
+                  <el-tag type="warning" size="small">{{ formatNumber(plan.total_cost) }} 元</el-tag>
+                  <el-tag size="small" type="success">{{ percent(plan.load_utilization) }}</el-tag>
                 </div>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
-          
-          <!-- 未分配订单 -->
-          <div v-if="unassignedOrders.length > 0" class="unassigned-section">
+              </template>
+              <div class="plan-detail">
+                <el-descriptions :column="2" size="small">
+                  <el-descriptions-item label="总距离">{{ formatNumber(plan.total_distance) }} 公里</el-descriptions-item>
+                  <el-descriptions-item label="预计时长">{{ formatNumber(plan.total_duration) }} 分钟</el-descriptions-item>
+                  <el-descriptions-item label="载重">{{ vehicleCapacity(plan.vehicle_info) }} 吨</el-descriptions-item>
+                  <el-descriptions-item label="评分">{{ formatNumber(plan.score) }}</el-descriptions-item>
+                </el-descriptions>
+                <div class="assigned-orders">
+                  <el-tag v-for="order in plan.orders" :key="order.ref || order.id" size="small">
+                    {{ order.order_number }}
+                  </el-tag>
+                </div>
+                <el-alert v-if="plan.suggestions?.length" type="info" :closable="false" class="mini-alert">
+                  <template #title>{{ plan.suggestions.join('；') }}</template>
+                </el-alert>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+
+          <div v-if="unassignedOrders.length" class="unassigned-section">
             <el-divider />
-            <h4>⚠️ 未分配订单</h4>
-            <el-table :data="unassignedOrders" size="small">
-              <el-table-column prop="order_number" label="订单号" width="120" />
+            <h4>未分配订单</h4>
+            <el-table :data="unassignedOrders" size="small" max-height="220">
+              <el-table-column prop="order_number" label="订单号" width="150" />
               <el-table-column prop="reason" label="原因" />
             </el-table>
           </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="18" class="bottom-grid">
+      <el-col :xs="24" :lg="8">
+        <el-card class="panel-card">
+          <template #header>诊断解释</template>
+          <div class="diagnostic-list">
+            <div v-for="item in diagnosticRows" :key="item.label" class="diagnostic-row">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :lg="8">
+        <el-card class="panel-card">
+          <template #header>AI Shadow</template>
+          <div v-if="aiShadow" class="ai-shadow">
+            <div class="shadow-score">
+              <span>风险分</span>
+              <strong>{{ aiShadow.risk_score ?? 0 }}</strong>
+            </div>
+            <el-tag v-for="model in shadowModels" :key="model" class="shadow-tag">{{ model }}</el-tag>
+            <p v-for="tip in aiShadow.recommendations || []" :key="tip">{{ tip }}</p>
+          </div>
+          <el-empty v-else description="尚未运行调度" :image-size="70" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :lg="8">
+        <el-card class="panel-card">
+          <template #header>求解器对比</template>
+          <el-table v-if="solverComparison.length" :data="solverComparison" size="small" max-height="240">
+            <el-table-column prop="solver" label="求解器" width="105" />
+            <el-table-column prop="assigned_orders" label="分配" width="70" />
+            <el-table-column prop="total_cost" label="成本" />
+            <el-table-column prop="status" label="状态" />
+          </el-table>
+          <el-empty v-else description="点击求解器对比" :image-size="70" />
         </el-card>
       </el-col>
     </el-row>
@@ -345,154 +292,219 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getOrders } from '@/api/orders'
 import { getVehicles } from '@/api/vehicles'
-import { autoDispatch, previewDispatch, getMergeSuggestions, applyDispatch, smartDispatch, getAlgorithms } from '@/api/dispatch'
+import {
+  applyDispatch,
+  compareDispatchSolvers,
+  createDispatchWave,
+  getAlgorithms,
+  getDispatchHealth,
+  previewDispatch,
+  smartDispatch
+} from '@/api/dispatch'
 
-// 订单相关
+const dispatchHealth = ref(null)
 const pendingOrders = ref([])
-const selectedOrders = ref([])
-const orderSearch = ref('')
-const priorityFilter = ref('')
-
-// 车辆相关
 const availableVehicles = ref([])
+const selectedOrders = ref([])
 const selectedVehicles = ref([])
+const dispatchPlans = ref([])
+const unassignedOrders = ref([])
+const dispatchSummary = ref(null)
+const dispatchDiagnostics = ref(null)
+const aiShadow = ref(null)
+const solverComparison = ref([])
+const activeScenarioId = ref(null)
+const activeScenarioCode = ref('')
+const activePlan = ref([0])
 
-// 调度配置
+const waveFilters = ref({
+  search: '',
+  city: '',
+  data_source: 'auto',
+  limit: 100
+})
+
 const dispatchConfig = ref({
+  algorithm: 'balanced',
+  max_orders_per_vehicle: 5,
+  use_precise_distance: true,
   consider_weather: true,
   consider_traffic: true,
-  max_orders_per_vehicle: 5,
-  algorithm: 'genetic',  // 新增：算法选择
-  weights: {             // 新增：多目标权重
+  weights: {
     cost: 0.4,
     time: 0.3,
     satisfaction: 0.3
   }
 })
 
-// 可用算法列表
 const algorithms = ref([
-  { id: 'genetic', name: '遗传算法', description: '多目标优化，结果更优' },
-  { id: 'greedy', name: '贪心算法', description: '快速响应，适合简单场景' },
-  { id: 'balanced', name: '均衡策略', description: '速度和质量的平衡' }
+  { id: 'balanced', name: '均衡策略', description: '综合考虑距离、容量、成本', performance: '快速' },
+  { id: 'greedy', name: '贪心算法', description: '局部最优快速分配', performance: '极快' },
+  { id: 'capacity_first', name: '载重优先', description: '优先提升车辆装载率', performance: '快速' }
 ])
 
-// 调度结果
-const dispatchPlans = ref([])
-const unassignedOrders = ref([])
-const dispatchSummary = ref(null)
-const mergeClusters = ref([])
-const activePlan = ref([0])
-
-// 加载状态
+const waveLoading = ref(false)
 const previewLoading = ref(false)
 const dispatchLoading = ref(false)
 const applyLoading = ref(false)
+const compareLoading = ref(false)
 
-// 筛选后的订单
+const currentAlgorithm = computed(() => algorithms.value.find(item => item.id === dispatchConfig.value.algorithm))
+const healthMessage = computed(() => dispatchHealth.value?.message || '正在检查调度数据链路')
+const effectiveDiagnostics = computed(() => dispatchDiagnostics.value || dispatchHealth.value?.diagnostics || {})
+const diagnosticRecommendations = computed(() => effectiveDiagnostics.value?.recommendations || [])
+const authenticityLabel = computed(() => {
+  const level = lastTruth.value.authenticity_level || 'C'
+  return `真实性 ${level}`
+})
+const truthTagType = computed(() => {
+  const level = lastTruth.value.authenticity_level || 'C'
+  if (level.startsWith('B')) return 'success'
+  if (level === 'C') return 'warning'
+  return 'info'
+})
+const lastTruth = ref({})
+
 const filteredOrders = computed(() => {
-  let result = pendingOrders.value
-  
-  if (priorityFilter.value) {
-    result = result.filter(o => o.priority === priorityFilter.value)
-  }
-  
-  if (orderSearch.value) {
-    const search = orderSearch.value.toLowerCase()
-    result = result.filter(o => 
-      o.order_number?.toLowerCase().includes(search) ||
-      o.customer_name?.toLowerCase().includes(search)
-    )
-  }
-  
-  return result
+  const search = waveFilters.value.search?.toLowerCase()
+  if (!search) return pendingOrders.value
+  return pendingOrders.value.filter(order =>
+    order.order_number?.toLowerCase().includes(search) ||
+    order.customer_name?.toLowerCase().includes(search) ||
+    order.origin_name?.toLowerCase().includes(search) ||
+    order.destination_name?.toLowerCase().includes(search)
+  )
 })
 
-// 获取优先级类型
-const getPriorityType = (priority) => {
-  const map = {
-    urgent: 'danger',
-    express: 'warning',
-    normal: 'info'
-  }
-  return map[priority] || 'info'
-}
+const diagnosticRows = computed(() => {
+  const d = effectiveDiagnostics.value || {}
+  const reasons = d.reason_counts || {}
+  return [
+    { label: '订单数量', value: d.order_count ?? 0 },
+    { label: '车辆数量', value: d.vehicle_count ?? 0 },
+    { label: '缺坐标订单', value: d.missing_coordinate_orders ?? 0 },
+    { label: '零重量订单', value: d.zero_weight_orders ?? 0 },
+    { label: '重量缺口', value: `${formatNumber(d.capacity_gap_weight_kg)} kg` },
+    { label: '容量告警', value: Object.keys(reasons).length ? Object.keys(reasons).join(', ') : '无' }
+  ]
+})
 
-const getPriorityText = (priority) => {
-  const map = {
-    urgent: '紧急',
-    express: '加急',
-    normal: '普通'
-  }
-  return map[priority] || priority
-}
+const shadowModels = computed(() => {
+  const models = aiShadow.value?.models || {}
+  return Object.entries(models).map(([key, value]) => `${key}: ${value}`)
+})
 
-// 全选订单
-const selectAllOrders = () => {
-  selectedOrders.value = filteredOrders.value.map(o => o.id)
-}
-
-// 加载数据
 onMounted(async () => {
-  await loadPendingOrders()
-  await loadAvailableVehicles()
-  await loadMergeSuggestions()
+  await Promise.all([loadHealth(), loadAlgorithms(), loadAvailableVehicles(), loadPendingOrders()])
+  await loadDispatchWave()
 })
 
-const loadPendingOrders = async () => {
+async function loadHealth() {
   try {
-    const res = await getOrders({ status: 'pending', per_page: 100 })
+    const res = await getDispatchHealth()
+    dispatchHealth.value = res
+    dispatchDiagnostics.value = res.diagnostics
+    lastTruth.value = {
+      authenticity_level: res.authenticity_level,
+      provider_status: res.provider_status,
+      data_source: res.data_source
+    }
+  } catch (error) {
+    console.error('加载调度健康失败:', error)
+  }
+}
+
+async function loadAlgorithms() {
+  try {
+    const res = await getAlgorithms()
+    if (res.success) algorithms.value = res.algorithms || algorithms.value
+  } catch (error) {
+    console.error('加载算法列表失败:', error)
+  }
+}
+
+async function loadPendingOrders() {
+  try {
+    if (waveFilters.value.data_source !== 'orders') return
+    const res = await getOrders({ status: 'pending', per_page: waveFilters.value.limit })
     pendingOrders.value = res.orders || []
   } catch (error) {
     console.error('加载订单失败:', error)
   }
 }
 
-const loadAvailableVehicles = async () => {
+async function loadAvailableVehicles() {
   try {
-    const res = await getVehicles({ status: 'available' })
-    availableVehicles.value = res.vehicles || []
+    const res = await getVehicles({ status: 'available', per_page: 200 })
+    availableVehicles.value = normalizeVehicles(res.vehicles || [])
   } catch (error) {
     console.error('加载车辆失败:', error)
   }
 }
 
-const loadMergeSuggestions = async () => {
+async function loadDispatchWave() {
+  waveLoading.value = true
   try {
-    const res = await getMergeSuggestions({ max_distance: 30 })
+    const res = await createDispatchWave(buildPayload(false))
     if (res.success) {
-      mergeClusters.value = res.clusters || []
+      pendingOrders.value = res.wave?.orders || pendingOrders.value
+      availableVehicles.value = normalizeVehicles(res.wave?.vehicles || availableVehicles.value)
+      dispatchDiagnostics.value = res.wave?.diagnostics || dispatchDiagnostics.value
+      lastTruth.value = {
+        authenticity_level: res.authenticity_level,
+        data_source: res.data_source
+      }
+      if (!selectedOrders.value.length) {
+        selectedOrders.value = pendingOrders.value.slice(0, Math.min(20, pendingOrders.value.length)).map(order => order.id)
+      }
     }
   } catch (error) {
-    console.error('加载合并建议失败:', error)
+    ElMessage.error('生成调度波次失败')
+  } finally {
+    waveLoading.value = false
   }
 }
 
-// 预览调度
-const handlePreview = async () => {
-  if (selectedOrders.value.length === 0) {
-    ElMessage.warning('请先选择要调度的订单')
-    return
+function buildPayload(includeSelection = true) {
+  return {
+    search: waveFilters.value.search || undefined,
+    city: waveFilters.value.city || undefined,
+    data_source: waveFilters.value.data_source,
+    limit: waveFilters.value.limit,
+    order_ids: includeSelection && selectedOrders.value.length ? selectedOrders.value : undefined,
+    vehicle_ids: selectedVehicles.value.length ? selectedVehicles.value : undefined,
+    ...dispatchConfig.value
   }
-  
+}
+
+function applyResult(res) {
+  dispatchPlans.value = res.plans || []
+  unassignedOrders.value = res.unassigned_orders || []
+  dispatchSummary.value = res.summary || null
+  dispatchDiagnostics.value = res.diagnostics || null
+  aiShadow.value = res.ai_shadow || null
+  activeScenarioId.value = res.scenario_id || null
+  activeScenarioCode.value = res.scenario_code || ''
+  lastTruth.value = {
+    authenticity_level: res.authenticity_level,
+    provider_status: res.provider_status,
+    data_source: res.data_source,
+    distance_source: res.distance_source,
+    fallback_reason: res.fallback_reason
+  }
+}
+
+async function handlePreview() {
   previewLoading.value = true
-  
   try {
-    const res = await previewDispatch({
-      order_ids: selectedOrders.value,
-      vehicle_ids: selectedVehicles.value.length > 0 ? selectedVehicles.value : null,
-      ...dispatchConfig.value
-    })
-    
+    const res = await previewDispatch(buildPayload(true))
     if (res.success) {
-      dispatchPlans.value = res.plans || []
-      unassignedOrders.value = res.unassigned_orders || []
-      dispatchSummary.value = res.summary
-      ElMessage.success(`预览完成：${res.plans.length} 辆车`)
+      applyResult(res)
+      ElMessage.success(`预览完成：${res.summary?.assigned_orders || 0} 单已分配`)
     } else {
       ElMessage.error(res.error || '预览失败')
     }
@@ -503,205 +515,338 @@ const handlePreview = async () => {
   }
 }
 
-// 执行调度
-const handleAutoDispatch = async () => {
-  if (selectedOrders.value.length === 0) {
-    ElMessage.warning('请先选择要调度的订单')
-    return
-  }
-  
+async function handleSmartDispatch() {
   dispatchLoading.value = true
-  
   try {
-    // 使用智能调度 API
-    const res = await smartDispatch({
-      order_ids: selectedOrders.value,
-      vehicle_ids: selectedVehicles.value.length > 0 ? selectedVehicles.value : null,
-      weights: dispatchConfig.value.weights,
-      consider_weather: dispatchConfig.value.consider_weather,
-      consider_traffic: dispatchConfig.value.consider_traffic,
-      algorithm: dispatchConfig.value.algorithm
-    })
-    
+    const res = await smartDispatch(buildPayload(true))
     if (res.success) {
-      dispatchPlans.value = res.plans || []
-      unassignedOrders.value = res.unassigned_orders || []
-      dispatchSummary.value = res.summary
-      
-      const algoName = algorithms.value.find(a => a.id === dispatchConfig.value.algorithm)?.name || dispatchConfig.value.algorithm
-      ElMessage.success(`${algoName}调度完成：${res.summary.assigned_orders} 单已分配`)
-      
-      // 显示优化信息
-      if (res.generations) {
-        console.log(`遗传算法迭代 ${res.generations} 代，收敛分数: ${res.convergence_score?.toFixed(4)}`)
-      }
+      applyResult(res)
+      ElMessage.success(`${currentAlgorithm.value?.name || '智能调度'}完成：${res.summary?.assigned_orders || 0} 单已分配`)
     } else {
-      ElMessage.error(res.error || '调度失败')
+      ElMessage.error(res.error || '智能调度失败')
     }
   } catch (error) {
-    ElMessage.error('执行调度失败')
+    ElMessage.error('执行智能调度失败')
   } finally {
     dispatchLoading.value = false
   }
 }
 
-// 确认执行调度
-const handleApplyAll = async () => {
+async function handleCompareSolvers() {
+  compareLoading.value = true
+  try {
+    const res = await compareDispatchSolvers({
+      ...buildPayload(true),
+      solvers: ['greedy', 'balanced', 'capacity_first', 'ortools', 'alns', 'genetic']
+    })
+    if (res.success) {
+      solverComparison.value = res.results || []
+      ElMessage.success(res.best_solver ? `推荐求解器：${res.best_solver}` : '求解器对比完成')
+    } else {
+      ElMessage.error(res.error || '求解器对比失败')
+    }
+  } catch (error) {
+    ElMessage.error('求解器对比失败')
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+async function handleApplyAll() {
+  if (!dispatchPlans.value.length) return
   try {
     await ElMessageBox.confirm(
-      '确认执行调度计划？这将更新订单和车辆状态。',
+      '确认执行当前调度方案？系统会写入调度场景与分配记录，不会覆盖原始真实物流明细。',
       '确认执行',
       { type: 'warning' }
     )
-    
     applyLoading.value = true
-    
-    const plans = dispatchPlans.value.map(p => ({
-      vehicle_id: p.vehicle_id,
-      order_ids: p.orders.map(o => o.id)
-    }))
-    
-    const res = await applyDispatch(plans)
-    
+    const res = await applyDispatch({
+      scenario_id: activeScenarioId.value,
+      scenario_code: activeScenarioCode.value,
+      plans: dispatchPlans.value,
+      summary: dispatchSummary.value,
+      diagnostics: dispatchDiagnostics.value,
+      ai_shadow: aiShadow.value,
+      ...lastTruth.value
+    })
     if (res.success) {
       ElMessage.success(res.message)
-      // 重新加载数据
-      await loadPendingOrders()
-      await loadAvailableVehicles()
-      dispatchPlans.value = []
-      dispatchSummary.value = null
-      selectedOrders.value = []
+      await loadHealth()
     } else {
       ElMessage.error(res.error || '执行失败')
     }
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('执行调度失败')
-    }
+    if (error !== 'cancel') ElMessage.error('执行调度失败')
   } finally {
     applyLoading.value = false
   }
 }
 
-// 应用合并建议
-const applyMergeCluster = (cluster) => {
-  selectedOrders.value = cluster.order_ids
-  ElMessage.success(`已选择 ${cluster.orders.length} 个可合并订单`)
+function selectAllOrders() {
+  selectedOrders.value = filteredOrders.value.map(order => order.id)
+}
+
+function toggleOrder(orderId) {
+  if (selectedOrders.value.includes(orderId)) {
+    selectedOrders.value = selectedOrders.value.filter(id => id !== orderId)
+  } else {
+    selectedOrders.value = [...selectedOrders.value, orderId]
+  }
+}
+
+function normalizeVehicles(vehicles) {
+  return vehicles.map(vehicle => ({
+    ...vehicle,
+    capacity_weight: vehicle.capacity_weight ?? vehicle.load_capacity ?? vehicle.capacity ?? 0,
+    capacity_volume: vehicle.capacity_volume ?? vehicle.volume_capacity ?? 0
+  }))
+}
+
+function sourceLabel(source) {
+  const map = {
+    shipment_fact: '真实明细',
+    orders: '订单表',
+    none: '无数据'
+  }
+  return map[source] || source || '未知'
+}
+
+function vehicleCapacity(vehicle = {}) {
+  return formatNumber(vehicle.capacity_weight ?? vehicle.load_capacity ?? vehicle.capacity ?? 0)
+}
+
+function formatWeight(order = {}) {
+  const tons = order.weight ?? ((order.weight_kg || 0) / 1000)
+  return formatNumber(tons)
+}
+
+function formatNumber(value) {
+  const number = Number(value || 0)
+  if (Number.isNaN(number)) return '0'
+  return number.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
+function percent(value) {
+  const number = Number(value || 0)
+  return `${Math.round(number * 100)}%`
 }
 </script>
 
 <style scoped>
-.dispatch-view {
+.dispatch-console {
   padding: 20px;
+  color: #e5f4ff;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.health-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(420px, 1fr);
+  gap: 18px;
+  padding: 22px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(0, 212, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(8, 22, 36, 0.86);
 }
 
-.filter-bar {
-  display: flex;
+.section-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: #00d4ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.health-copy h2 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.health-copy p {
+  margin: 0;
+  color: #9bb4c8;
+  line-height: 1.6;
+}
+
+.health-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 15px;
+}
+
+.metric {
+  padding: 14px;
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 34, 52, 0.88);
+}
+
+.metric span {
+  display: block;
+  color: #8ca9bd;
+  font-size: 12px;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 8px;
+  color: #f4fbff;
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.truth-alert {
+  margin-bottom: 16px;
+}
+
+.main-grid,
+.bottom-grid {
+  row-gap: 18px;
+}
+
+.bottom-grid {
+  margin-top: 18px;
+}
+
+.panel-card {
+  border-radius: 8px;
+}
+
+.card-header,
+.toolbar-row,
+.plan-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(132px, 1fr) 96px;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.source-select {
+  width: 100%;
+}
+
+.limit-input {
+  width: 96px;
+}
+
+.toolbar-row {
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+
+.full-select {
+  width: 100%;
 }
 
 .order-list {
-  max-height: 400px;
+  max-height: 420px;
   overflow-y: auto;
+  margin-top: 12px;
 }
 
 .order-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
   padding: 10px;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
   margin-bottom: 8px;
-  transition: all 0.3s;
+  border: 1px solid rgba(64, 158, 255, 0.18);
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #263445;
+  cursor: pointer;
 }
 
 .order-item.selected {
-  background: #ecf5ff;
   border-color: #409eff;
+  background: #ecf5ff;
 }
 
-.order-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.order-header {
+.order-title,
+.order-meta {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.order-number {
-  font-weight: 500;
-  color: #303133;
+.order-title {
+  justify-content: space-between;
+  font-weight: 700;
+  min-width: 0;
 }
 
-.order-detail {
-  display: flex;
-  gap: 15px;
+.order-title span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order-meta {
+  margin-top: 4px;
+  color: #6b7b8d;
   font-size: 12px;
-  color: #909399;
-}
-
-.action-bar {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #ebeef5;
+  flex-wrap: wrap;
 }
 
 .config-hint {
+  margin-top: 6px;
+  color: #7d8da1;
   font-size: 12px;
-  color: #909399;
-  margin-left: 10px;
+  line-height: 1.4;
 }
 
 .config-actions {
   display: flex;
   gap: 10px;
-  margin-top: 20px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.summary-card {
+  margin-top: 18px;
 }
 
 .cost {
-  font-size: 18px;
-  font-weight: bold;
   color: #e6a23c;
+  font-weight: 700;
+}
+
+.result-card {
+  min-height: 520px;
 }
 
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 40px;
-  color: #909399;
+  justify-content: center;
+  min-height: 260px;
+  color: #8a98a8;
 }
 
 .empty-icon {
-  font-size: 48px;
-  margin-bottom: 10px;
+  font-size: 44px;
+  margin-bottom: 12px;
 }
 
 .plan-list {
-  max-height: 500px;
+  max-height: 520px;
   overflow-y: auto;
 }
 
 .plan-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   width: 100%;
-}
-
-.vehicle-name {
-  font-weight: 500;
+  justify-content: flex-start;
 }
 
 .plan-detail {
@@ -709,44 +854,83 @@ const applyMergeCluster = (cluster) => {
 }
 
 .assigned-orders {
-  margin-top: 15px;
-}
-
-.assigned-orders h5 {
-  margin-bottom: 8px;
-  color: #606266;
-}
-
-.plan-suggestions {
-  margin-top: 15px;
-}
-
-.plan-suggestions ul {
-  margin: 0;
-  padding-left: 20px;
-}
-
-.merge-cluster {
-  padding: 10px;
-  background: #f0f9eb;
-  border-radius: 4px;
-  margin-bottom: 10px;
-}
-
-.cluster-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 5px;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 12px;
 }
 
-.cluster-info {
-  font-size: 12px;
-  color: #606266;
+.mini-alert {
+  margin-top: 12px;
 }
 
 .unassigned-section h4 {
+  margin: 0 0 12px;
   color: #f56c6c;
+}
+
+.diagnostic-list {
+  display: grid;
+  gap: 8px;
+}
+
+.diagnostic-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf0f5;
+  color: #425466;
+}
+
+.ai-shadow {
+  color: #425466;
+}
+
+.shadow-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   margin-bottom: 10px;
+}
+
+.shadow-score strong {
+  color: #f59e0b;
+  font-size: 28px;
+}
+
+.shadow-tag {
+  margin: 0 6px 6px 0;
+}
+
+.ai-shadow p {
+  margin: 8px 0 0;
+  color: #60758a;
+  line-height: 1.5;
+}
+
+:deep(.el-card__header) {
+  font-weight: 700;
+}
+
+@media (max-width: 1180px) {
+  .health-band {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .dispatch-console {
+    padding: 12px;
+  }
+
+  .health-metrics,
+  .filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .health-band {
+    padding: 16px;
+  }
 }
 </style>

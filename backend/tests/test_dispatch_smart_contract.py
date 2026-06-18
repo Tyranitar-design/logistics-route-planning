@@ -113,7 +113,17 @@ def test_smart_dispatch_accepts_local_statuses_and_returns_display_truth_contrac
     assert payload["summary"]["total_vehicles_used"] == 1
     assert payload["summary"]["total_distance_km"] > 0
     assert payload["summary"]["average_cost_per_order"] > 0
-    assert payload["distance_source"] == "haversine_legacy_dispatch"
+    assert payload["distance_source"] in {
+        "amap_route",
+        "distance_cache_exact",
+        "distance_cache_approx",
+        "haversine_corrected",
+        "mixed_distance_provider",
+        "precise_distance_provider",
+    }
     assert payload["path_source"] == "dispatch_assignment_sequence"
     assert payload["authenticity_level"] == "C"
-    assert payload["fallback_reason"]
+    assert "fallback_reason" in payload
+    assert payload["legacy_truth_contract"]["distance_source"] == "haversine_legacy_dispatch"
+    assert payload["legacy_truth_contract"]["actual_distance_source"] == payload["distance_source"]
+    assert payload["legacy_truth_contract"]["fallback_reason"]
