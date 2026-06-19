@@ -8,56 +8,66 @@
 ## 🏁 当前状态（2026-06-19）
 
 ✅ **指挥中心 + 大屏 Dashboard 已上线**（https://logistics-demo-yu.top）
-✅ **数据库已切换 PostgreSQL/PostGIS**（生产核心 4 服务：postgres / redis / backend / frontend）
-✅ **多求解器引擎就绪**（9 种 solver + operators + Pareto metrics + solver_factory）
-✅ **统一调度编排（dispatch orchestration）打通**（preview / apply / 健康检查链路）
-✅ **文档与记忆系统对齐 PostgreSQL/工程现状**（2026-06-19 C哥完成）
+✅ **数据库 PostgreSQL/PostGIS**（生产核心 4 服务）
+✅ **多求解器引擎就绪**（9 种 solver）
+✅ **统一调度编排打通**（preview/apply/health）
+✅ **文档与记忆系统对齐**
+✅ **dispatch 线上烟雾测试正式化**（smoke_test_dispatch.py）
+✅ **数据真实性大补全**：5 万 shipment_facts 坐标 resolved 24%→**100%**，11 虚构地名真实化，城市覆盖 18→**29**
+✅ **dispatch 性能优化**：精确距离 solve_time 188s→**17.83ms**（提升 10000 倍），authenticity 稳定 B
 
 ---
 
 ## 🛠️ 已知待办
 
-1. ~~`.env.example` / `docs/数据库设计.md` 对齐 PostgreSQL~~ ✅ 2026-06-19 C哥完成
-2. ~~`.shared-memory` 补齐 PROGRESS.md / CONTEXT.md / DECISIONS.md~~ ✅ 2026-06-19 C哥完成
-3. **`CODE_REVIEW_REPORT.md`（3 月）3 个低优尾巴**：信息素持久化、自适应冷却、配置化成本
-4. **`scripts/_tmp_dispatch_smoke.py`** 为 untracked 临时脚本，待清理或纳入正式测试
-5. `backend/config.py` 第 33/81 行重复 `.replace('\\','/')`（无害冗余，可顺手清理）
-6. 线上 dispatch 链路烟雾测试（需联网 + admin 凭据，待小宇确认）
+1. ~~`.env.example` / `数据库设计.md` 对齐 PostgreSQL~~ ✅
+2. ~~`.shared-memory` 补齐三件套~~ ✅
+3. ~~`config.py` 冗余 replace 清理~~ ✅
+4. ~~`analytics_service` 配置化成本（CODE_REVIEW #8）~~ ✅
+5. ~~dispatch 烟雾测试脚本正式化~~ ✅
+6. ~~数据补全（5 万坐标 + 虚构真实化，本地主库）~~ ✅
+7. ~~dispatch 距离性能优化（188s→17ms）~~ ✅
+8. **CODE_REVIEW 剩余 2 低优**：信息素持久化（ACO）、自适应冷却（SA）
+9. **Node/Route 坐标审查**：21 节点 / 306 路线（独立表，真实性待审）
+10. **部署线上**：本地数据 + 4 commit 推线上（待小宇确认）
+11. **临时脚本收尾**：5 个 `_tmp_*`（正式化/删除，进行中）
 
 ---
 
-## 🛣️ 里程碑（基于 git 历史，倒序）
+## 🛣️ 里程碑（2026-06-19 会话）
 
-| 时间 | Commit | 内容 |
-|------|--------|------|
-| 最近 | `72472c4` | feat: 统一运单调度编排（dispatch orchestration） |
-| - | `2c36ad0` | feat: 升级物流指挥中心部署 |
-| - | `ef9f42a` | fix: 优化引擎 6 大问题修复（统一链路 + PyVRP 兼容 + 真实 Pareto + duration_matrix） |
-| - | `29cf580` | feat: 轻量级大数据服务（替代 Kafka/Spark/Flink 重型栈） |
-| - | `671b9e9` | feat: 优化引擎 + 智能调度 V2 + 天地图服务 |
-| 早期 | - | Flask + Vue + OR-Tools 基础框架 / SQLite → PostgreSQL 切换 |
+| Commit | 内容 |
+|--------|------|
+| `a8e3e02` | docs: 对齐 PostgreSQL + 补齐 .shared-memory 记忆三件套 |
+| `1ed6a83` | refactor: 清理 config.py 冗余 replace + 配置化 analytics 成本比例 |
+| `3cdcdfe` | test: 正式化 dispatch 线上烟雾测试脚本 |
+| `4b05c82` | perf: 优化 dispatch 精确距离性能 188s→17ms + 修复 authenticity |
+
+更早主线：`72472c4` 统一调度编排 / `2c36ad0` 升级指挥中心部署 / `ef9f42a` 优化引擎修复 / `29cf580` 轻量大数据 / `671b9e9` 优化引擎+智能调度V2
 
 ---
 
-## 📊 生产数据规模（已验证）
+## 📊 生产数据规模（本地主库，2026-06-19 补全后）
 
-| 表 | 记录数 |
-|----|--------|
-| `shipment_facts` | 50,000 |
-| `raw_logistics_shipment_records` | 50,000 |
-| `nodes` | 21 |
-| `routes` | 306 |
-| `vehicles` | 2 |
+| 表 | 记录数 | 状态 |
+|----|--------|------|
+| `shipment_facts` | 50,000 | ✅ 坐标 100% resolved，29 城真实 |
+| `raw_logistics_shipment_records` | 50,000 | - |
+| `nodes` | 21 | ⚪ 独立表，待审 |
+| `routes` | 306 | ⚪ 独立表，待审 |
+| `vehicles` | 2 | - |
 
-> 来源：`docs/COMMAND_CENTER_DEPLOYMENT.md`
+> 数据来源：`物流运输数据集.csv`（operational_shipment_csv）+ `数据.xlsx`（industry_panel）
+> 本地 PG 是主库，线上是其 dump 副本（`deploy_tencent_cloud_command_center.py` 同步）
 
 ---
 
 ## 🧠 记忆系统演进
 
-- **4 月**：学习调研阶段（VeRyPy / PyVRP / Metaheuristic / MCP 等开源仓库学习）—— `TASKS.md` / `daily/` 记录停留于此
-- **5-6 月**：工程化阶段（指挥中心、多求解器引擎、PostgreSQL、统一调度）—— 代码大幅演进，记忆系统本次（2026-06-19）补齐对齐
+- **4 月**：学习调研阶段（TASKS.md / daily 停留）
+- **5-6 月**：工程化阶段（指挥中心、多求解器、PostgreSQL、统一调度）
+- **2026-06-19**：C哥全面对齐 —— 文档 / 记忆 / 代码清理 / 数据补全 / 性能优化
 
 ---
 
-_最后更新：2026-06-19（C哥建立）_
+_最后更新：2026-06-19（C哥）_
