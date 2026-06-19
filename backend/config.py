@@ -30,7 +30,7 @@ class Config:
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
     DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
     # 将Windows路径转换为SQLite兼容的URL格式
-    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
+    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/')
     import urllib.parse
     ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
     SQLALCHEMY_DATABASE_URI = (
@@ -78,7 +78,7 @@ class ProductionConfig(Config):
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
     DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
     # 将Windows路径转换为SQLite兼容的URL格式
-    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/').replace('\\', '/')
+    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/')
     import urllib.parse
     ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
     SQLALCHEMY_DATABASE_URI = (

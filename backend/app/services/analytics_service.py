@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from app.models import db
 from app.models import Order, Vehicle, Node, Route
 
 logger = logging.getLogger(__name__)
+
+# 成本占收入比例（可配置，默认 70%）；analytics 多处成本估算统一引用
+COST_RATIO = float(os.environ.get('LOGISTICS_COST_RATIO', '0.7'))
 
 
 @dataclass
@@ -67,7 +71,7 @@ class AnalyticsService:
             total_revenue = float(order_stats.revenue or 0)
             
             # 成本计算（可配置，默认 70%）
-            cost_ratio = 0.7  # 可从配置读取
+            cost_ratio = COST_RATIO  # 成本占收入比例（可通过 LOGISTICS_COST_RATIO 环境变量配置）
             total_cost = total_revenue * cost_ratio
             
             profit_margin = ((total_revenue - total_cost) / total_revenue * 100) if total_revenue > 0 else 0
@@ -164,7 +168,7 @@ class AnalyticsService:
                 daily_data[date_str]['orders'] += 1
                 
                 cost = order.actual_cost or order.estimated_cost or 0
-                daily_data[date_str]['cost'] += cost * 0.7
+                daily_data[date_str]['cost'] += cost * COST_RATIO
                 daily_data[date_str]['revenue'] += cost
                 
                 if order.status == 'delivered':
