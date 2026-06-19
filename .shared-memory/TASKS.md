@@ -1,6 +1,30 @@
 # 📋 TASKS.md - 学习任务追踪
 
+> ⚠️ 下方「学习任务」为 **4 月调研阶段**记录（已归档）。
+> 当前工程主线任务见顶部「🛠️ 当前任务（2026-06）」。
+
 ---
+
+## 🛠️ 当前任务（2026-06）
+
+### ✅ 已完成
+- [x] **2026-06-19 文档对齐 PostgreSQL**（C哥）
+  - `backend/.env.example` 补 `POSTGRES_DATABASE_URL` + Redis + `DISABLE_ML_ROUTES`
+  - `.env.production.example` 加"分项变量 → compose 拼接 → Flask"双轨机制注释
+  - `docs/数据库设计.md` 选型/迁移/规模对齐 PostgreSQL+PostGIS
+- [x] **2026-06-19 补齐 .shared-memory 三件套**（C哥）
+  - 新建 `PROGRESS.md` / `CONTEXT.md` / `DECISIONS.md`
+  - 更新 `TASKS.md` / `MEMORIES.md`，写今日 daily 日志
+
+### ⏳ 进行中 / 待办
+- [ ] **`CODE_REVIEW_REPORT.md` 三个低优尾巴**：信息素持久化、自适应冷却、配置化成本
+- [ ] **`scripts/_tmp_dispatch_smoke.py`** 为 untracked 临时脚本，待清理或纳入正式测试
+- [ ] **线上 dispatch 链路烟雾测试**（需联网 + admin 凭据，待小宇确认）
+- [ ] **`backend/config.py` 第 33/81 行重复 replace 清理**（顺手活）
+
+---
+
+## 📚 历史学习任务（2026-04 调研阶段 · 归档）
 
 ## 📅 2026-04-24 学习任务（今日）
 
