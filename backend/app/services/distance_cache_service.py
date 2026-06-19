@@ -437,7 +437,7 @@ class DistanceCacheService:
             
             # cached.source == 'haversine_corrected' and use_amap=True
             try:
-                amap_result = self._call_amap_distance(origin, destination, strategy)
+                amap_result = self._call_amap_with_route_fallback(origin, destination, strategy)
                 if amap_result:
                     self.put_cached(
                         origin, destination,
@@ -472,7 +472,7 @@ class DistanceCacheService:
         # 2. 尝试高德 API
         if use_amap:
             try:
-                amap_result = self._call_amap_distance(origin, destination, strategy)
+                amap_result = self._call_amap_with_route_fallback(origin, destination, strategy)
                 if amap_result:
                     # 写入缓存
                     self.put_cached(
@@ -872,6 +872,25 @@ class DistanceCacheService:
         
         return None
     
+    def _call_amap_with_route_fallback(
+        self,
+        origin: Tuple[float, float],
+        destination: Tuple[float, float],
+        strategy: int = 0
+    ) -> Optional[Dict]:
+        """高德距离 API 优先，失败时用驾车路径规划(driving_route)兜底，返回精确距离或 None。"""
+        try:
+            result = self._call_amap_distance(origin, destination, strategy)
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"高德距离 API 失败，尝试驾车路径兜底: {e}")
+        try:
+            return self._call_amap_route_distance(origin, destination, strategy)
+        except Exception as e:
+            logger.warning(f"高德驾车路径兜底也失败: {e}")
+            return None
+
     def _call_amap_batch_distance(
         self,
         pairs: List[Tuple[int, int, Tuple[float, float], Tuple[float, float]]],

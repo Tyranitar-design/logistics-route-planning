@@ -776,34 +776,47 @@ class DispatchOrchestrationService:
         use_provider = use_precise_distance and 0 < len(valid_orders) <= PRECISE_DISTANCE_LIMIT
 
         if use_provider:
-            coords = []
-            node_ids = []
-            for order in valid_orders:
-                origin, destination = order.coordinate_pair()
-                coords.extend([origin, destination])
-                node_ids.extend([f"{order.ref}:origin", f"{order.ref}:destination"])
             try:
-                matrix = get_precise_distance_provider().build_distance_matrix(
-                    coords,
-                    node_ids=node_ids,
-                    use_amap=True,
-                )
-                metadata = self._distance_metadata_from_matrix(matrix)
-                index_by_id = {node_id: idx for idx, node_id in enumerate(matrix.node_ids)}
+                cache = get_precise_distance_provider().distance_cache
+            except Exception:
+                cache = None
+            if cache is not None:
+                # 逐对查询：只算每个 order 的 origin→destination（n 对），
+                # 避免构建 n×n 全矩阵（原 40 点→1600 对，现仅 20 对），
+                # 大幅降低高德调用次数与 QPS 压力，杜绝跨 order 废对触发的逐对兜底。
+                source_counter: Counter = Counter()
+                exact_count = 0
+                approx_count = 0
                 for order in valid_orders:
-                    i = index_by_id[f"{order.ref}:origin"]
-                    j = index_by_id[f"{order.ref}:destination"]
-                    distance = float(matrix.distance_matrix_km[i][j])
-                    duration = float(matrix.duration_matrix_min[i][j])
+                    origin, destination = order.coordinate_pair()
+                    result = cache.get_distance(origin, destination, strategy=0, use_amap=True)
+                    distance = round(float(result.get("distance_km", 0.0) or 0.0), 2)
+                    duration = round(float(result.get("duration_minutes", 0.0) or 0.0), 2)
                     lookup[order.ref] = {
-                        "distance_km": round(distance, 2),
-                        "duration_min": round(duration, 2),
+                        "distance_km": distance,
+                        "duration_min": duration,
                         "cost": round(max(distance * DEFAULT_COST_PER_KM, order.freight or 0.0), 2),
-                        "source": metadata["distance_source"],
+                        "source": result.get("source"),
                     }
+                    raw_source = result.get("source", "unknown")
+                    is_exact = bool(result.get("is_exact", False))
+                    # 规范化 source：get_distance 返回 'cache'，需用 is_exact 区分精确/近似
+                    if raw_source == "cache":
+                        norm_source = "cache_exact" if is_exact else "cache_approx"
+                    elif raw_source in ("amap", "amap_route"):
+                        norm_source = "amap_route"
+                    else:
+                        norm_source = raw_source
+                    source_counter[norm_source] += 1
+                    if is_exact:
+                        exact_count += 1
+                    else:
+                        approx_count += 1
+                metadata = self._metadata_from_paired_sources(
+                    source_counter, exact_count, approx_count, len(valid_orders)
+                )
                 return lookup, metadata
-            except Exception as exc:
-                fallback_reason = f"precise_distance_error:{exc}"
+            fallback_reason = "distance_cache_unavailable"
         else:
             fallback_reason = (
                 "wave_too_large_for_live_distance_provider"
@@ -824,6 +837,40 @@ class DispatchOrchestrationService:
                 "missing_coordinate_orders": missing_coords,
             },
             "source_summary": {"haversine_corrected": max(0, len(orders) - missing_coords)},
+        }
+
+    @staticmethod
+    def _metadata_from_paired_sources(
+        source_counter: Counter, exact_count: int, approx_count: int, total: int
+    ) -> Dict[str, Any]:
+        """逐对距离查询的 metadata 构造（与 _distance_metadata_from_matrix 输出格式一致）。"""
+        sources = {k: v for k, v in source_counter.items() if v}
+        if "amap" in sources or "amap_route" in sources:
+            distance_source = "amap_route"
+        elif sources.get("cache_exact"):
+            distance_source = "distance_cache_exact"
+        elif sources.get("cache_approx"):
+            distance_source = "distance_cache_approx"
+        else:
+            distance_source = "haversine_corrected"
+
+        if distance_source == "haversine_corrected":
+            provider_status = "degraded"
+        elif approx_count == 0 and exact_count > 0:
+            provider_status = "ok"
+        else:
+            provider_status = "partial"
+
+        return {
+            "distance_source": distance_source,
+            "provider_status": provider_status,
+            "fallback_reason": None,
+            "precision": {
+                "exact_count": exact_count,
+                "approx_count": approx_count,
+                "fallback_count": 0,
+            },
+            "source_summary": dict(source_counter),
         }
 
     def _estimate_order_distance(self, order: DispatchOrder) -> Dict[str, Any]:
