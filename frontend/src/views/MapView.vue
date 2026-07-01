@@ -126,6 +126,28 @@
               </el-button>
             </el-form-item>
           </el-form>
+
+          <div class="provider-health-strip" v-if="amapProviderHealth">
+            <div class="provider-health-header">
+              <span>高德链路</span>
+              <el-button size="small" text @click="refreshProviderHealth(true)" :loading="providerHealthLoading">
+                诊断
+              </el-button>
+            </div>
+            <div class="provider-health-tags">
+              <el-tag size="small" :type="amapProviderHealth.keys?.effective_key_configured ? 'success' : 'danger'">
+                Key {{ amapProviderHealth.keys?.effective_key_configured ? '已配置' : '缺失' }}
+              </el-tag>
+              <el-tag
+                v-for="item in providerHealthComponents"
+                :key="item.key"
+                size="small"
+                :type="item.degraded ? 'warning' : 'success'"
+              >
+                {{ item.label }} {{ item.degraded ? '降级' : '正常' }}
+              </el-tag>
+            </div>
+          </div>
           
           <!-- 推荐结果 -->
           <div v-if="recommendResult" class="recommend-result">
@@ -141,17 +163,17 @@
 
             <div v-if="recommendResult.provider || recommendResult.authenticity" class="provider-status-panel">
               <el-alert
-                :type="recommendResult.degraded ? 'warning' : 'success'"
+                :type="routeProviderState.alertType"
                 :closable="false"
                 show-icon
               >
                 <template #title>
                   <span style="font-weight: 600">
-                    {{ recommendResult.degraded ? '服务降级中' : '真实服务链路' }}
+                    {{ routeProviderState.title }}
                   </span>
                 </template>
                 <div class="provider-status-meta">
-                  <span>Provider: {{ recommendResult.provider || 'unknown' }}</span>
+                  <span>Provider: {{ routeProviderState.provider }}</span>
                   <span>Status: {{ recommendResult.provider_status || 'unknown' }}</span>
                   <span v-if="recommendResult.fallback_reason">原因: {{ recommendResult.fallback_reason }}</span>
                 </div>
@@ -186,9 +208,9 @@
               <el-descriptions-item label="数据来源">
                 <el-tag
                   size="small"
-                  :type="recommendResult.degraded ? 'warning' : (recommendResult.source === 'amap' ? 'success' : 'info')"
+                  :type="routeProviderState.tagType"
                 >
-                  {{ recommendResult.degraded ? '高德降级估算' : (recommendResult.source === 'amap' ? '高德地图' : '本地算法') }}
+                  {{ routeProviderState.sourceLabel }}
                 </el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="降级原因" v-if="recommendResult.degraded">
@@ -275,8 +297,8 @@
             <el-button size="small" text @click="refreshTraffic">刷新</el-button>
           </template>
           <div v-if="currentTraffic" class="traffic-info">
-            <el-tag :type="getTrafficTagType(currentTraffic.evaluation)" size="large">
-              {{ currentTraffic.evaluation || '未知' }}
+            <el-tag :type="currentTraffic.degraded ? 'warning' : getTrafficTagType(currentTraffic.evaluation)" size="large">
+              {{ currentTraffic.degraded ? '路况服务降级' : (currentTraffic.evaluation || '未知') }}
             </el-tag>
             <div style="margin-top: 10px; font-size: 13px; color: #606266">
               当前路况：{{ getTrafficStatusText(currentTraffic.status) }}
@@ -310,9 +332,14 @@
             <el-button size="small" text @click="checkTiandituAvailability">检查</el-button>
           </template>
           <div v-if="tiandituAvailable" class="tianditu-info">
-            <el-tag type="success" size="small">天地图可用</el-tag>
+            <el-tag :type="tiandituHealth?.degraded ? 'warning' : 'success'" size="small">
+              {{ tiandituHealth?.degraded ? '天地图配置待验证' : '天地图可用' }}
+            </el-tag>
             <div style="margin-top: 10px; font-size: 13px; color: #606266">
               服务器已配置天地图服务
+            </div>
+            <div v-if="tiandituHealth?.fallback_reason" style="margin-top: 6px; font-size: 12px; color: #E6A23C">
+              {{ tiandituHealth.fallback_reason }}
             </div>
             <div style="margin-top: 10px; font-size: 12px; color: #909399">
               <el-button 
@@ -380,7 +407,7 @@ import { ElMessage } from 'element-plus'
 import { getNodes } from '@/api/nodes'
 import { recommendRoute } from '@/api/routes'
 import { getMapNodes, getMapRoutes } from '@/api/map'
-import { drivingRoute, multiRoute, trafficAtNode, compareRoutes } from '@/api/amap'
+import { drivingRoute, multiRoute, trafficAtNode, compareRoutes, providerHealth } from '@/api/amap'
 import { drivingRoute as tiandituDrivingRoute, compareWithAmap as compareWithTiandituApi, getKeysInfo } from '@/api/tianditu'
 import WeatherCard from '@/components/WeatherCard.vue'
 import TrafficMonitor from '@/components/TrafficMonitor.vue'
@@ -400,11 +427,14 @@ const currentWeather = ref(null)  // 当前天气数据
 const useAmap = ref(true)
 const showTraffic = ref(false)
 const mapType = ref('standard')
+const amapProviderHealth = ref(null)
+const providerHealthLoading = ref(false)
 
 // 天地图相关
 const tiandituAvailable = ref(false)
 const compareWithTiandituLoading = ref(false)
 const tiandituComparisonResult = ref(null)
+const tiandituHealth = ref(null)
 
 const routeForm = ref({
   startNode: null,
@@ -470,6 +500,39 @@ const getTrafficStatusText = (status) => {
   return map[status] || '未知'
 }
 
+const routeProviderState = computed(() => {
+  const route = recommendResult.value || {}
+  const source = route.source || route.provider || 'local'
+
+  if (source === 'local') {
+    return {
+      alertType: 'info',
+      tagType: 'info',
+      title: '本地算法链路',
+      sourceLabel: '本地算法',
+      provider: route.provider || 'local'
+    }
+  }
+
+  const degraded = Boolean(route.degraded || route.provider_status === 'degraded' || route.provider_status === 'unavailable')
+  return {
+    alertType: degraded ? 'warning' : 'success',
+    tagType: degraded ? 'warning' : 'success',
+    title: degraded ? '高德路线降级估算' : '高德真实路线链路',
+    sourceLabel: degraded ? '高德路线降级估算' : '高德地图真实路网',
+    provider: route.provider || 'amap'
+  }
+})
+
+const providerHealthComponents = computed(() => {
+  const components = amapProviderHealth.value?.components || {}
+  return [
+    { key: 'route', label: '路线', ...components.route },
+    { key: 'weather', label: '天气', ...components.weather },
+    { key: 'traffic', label: '路况', ...components.traffic }
+  ].filter(item => item.provider_status || item.fallback_reason || typeof item.degraded === 'boolean')
+})
+
 // 对比表格数据
 const compareTableData = computed(() => {
   if (!compareResult.value) return []
@@ -529,6 +592,7 @@ onMounted(async () => {
   // 等待DOM渲染完成后初始化地图
   await nextTick()
   initMap()
+  refreshProviderHealth(false)
 })
 
 const initMap = async () => {
@@ -713,7 +777,11 @@ const loadNodeTraffic = async (nodeId) => {
       currentTraffic.value = {
         evaluation: '路况服务暂不可用',
         status: null,
-        available: false
+        available: false,
+        provider: 'amap',
+        provider_status: 'degraded',
+        degraded: true,
+        fallback_reason: res.error || 'TRAFFIC_PROVIDER_UNAVAILABLE'
       }
     }
   } catch (error) {
@@ -721,7 +789,11 @@ const loadNodeTraffic = async (nodeId) => {
     currentTraffic.value = {
       evaluation: '路况查询失败',
       status: null,
-      available: false
+      available: false,
+      provider: 'amap',
+      provider_status: 'degraded',
+      degraded: true,
+      fallback_reason: error?.response?.data?.error || error.message || 'TRAFFIC_REQUEST_FAILED'
     }
   }
 }
@@ -734,11 +806,37 @@ const refreshTraffic = () => {
   }
 }
 
+const refreshProviderHealth = async (probe = false) => {
+  providerHealthLoading.value = true
+  try {
+    const response = await providerHealth(probe)
+    if (response.success) {
+      amapProviderHealth.value = response
+      if (probe) {
+        const degradedComponents = providerHealthComponents.value.filter(item => item.degraded)
+        if (degradedComponents.length) {
+          ElMessage.warning(`检测到 ${degradedComponents.map(item => item.label).join('、')} 链路降级`)
+        } else {
+          ElMessage.success('高德路线、天气、路况链路均正常')
+        }
+      }
+    }
+  } catch (error) {
+    console.error('高德链路诊断失败:', error)
+    if (probe) {
+      ElMessage.error('高德链路诊断失败')
+    }
+  } finally {
+    providerHealthLoading.value = false
+  }
+}
+
 // 检查天地图服务可用性
 const checkTiandituAvailability = async () => {
   try {
     const response = await getKeysInfo()
     tiandituAvailable.value = response.browser_key_configured || response.server_key_configured
+    tiandituHealth.value = response
     if (tiandituAvailable.value) {
       ElMessage.success('天地图服务可用')
     } else {
@@ -1223,6 +1321,30 @@ watch(() => routeForm.value.startNode, (newVal) => {
 
 .provider-status-panel {
   margin-top: 12px;
+}
+
+.provider-health-strip {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.provider-health-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.provider-health-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .provider-status-meta {

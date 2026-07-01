@@ -21,6 +21,9 @@ yarn-error.log*
 # 前端构建产物
 frontend/dist/
 frontend/dist-ssr/
+frontend-next/.next/
+frontend-next/out/
+frontend-next/*.tsbuildinfo
 *.local
 
 # 数据库

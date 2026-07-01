@@ -25,6 +25,16 @@
           <span class="value">{{ weatherData.humidity }}%</span>
         </div>
       </div>
+
+      <div v-if="weatherData.provider || weatherData.source" class="weather-provider">
+        <el-tag size="small" :type="weatherData.degraded ? 'warning' : 'success'">
+          {{ weatherData.degraded ? '天气降级' : '高德天气' }}
+        </el-tag>
+        <span>{{ weatherData.provider_status || (weatherData.degraded ? 'degraded' : 'ok') }}</span>
+        <span v-if="weatherData.fallback_reason || weatherData.note">
+          {{ weatherData.fallback_reason || weatherData.note }}
+        </span>
+      </div>
       
       <!-- 运输影响 -->
       <div v-if="transportImpact" class="transport-impact" :class="getImpactClass(transportImpact.impact_level)">
@@ -292,6 +302,19 @@ onMounted(() => {
   font-weight: 500;
   color: #303133;
   margin-top: 4px;
+}
+
+.weather-provider {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #606266;
 }
 
 /* 运输影响样式 */

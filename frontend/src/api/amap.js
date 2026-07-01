@@ -69,3 +69,13 @@ export function compareRoutes(originId, destinationId) {
     destination_id: destinationId 
   })
 }
+
+/**
+ * 高德 Provider 安全健康诊断
+ * @param {boolean} probe - 是否真实探测路线/天气/路况服务
+ */
+export function providerHealth(probe = false) {
+  return request.get('/amap/provider-health', {
+    params: { probe: probe ? 1 : 0 }
+  })
+}
