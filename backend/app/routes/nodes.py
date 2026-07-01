@@ -12,6 +12,7 @@ from app.models import db, Node
 from app.schemas import NodeCreate, NodeUpdate, NodeResponse
 from app.services.amap_service import get_amap_service
 from app.services.node_coordinate_service import build_resolution_candidates, resolve_node_coordinates
+from app.services.node_route_audit_service import audit_node_route_coordinates
 
 nodes_bp = Blueprint('nodes', __name__)
 
@@ -213,6 +214,17 @@ def coordinate_audit():
             },
             'nodes': missing,
         })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@nodes_bp.route('/route-coordinate-audit', methods=['GET'])
+@jwt_required()
+def route_coordinate_audit():
+    """审计 Node/Route 坐标与真实运单城市覆盖，不修改数据。"""
+    try:
+        sample_limit = request.args.get('sample_limit', 20, type=int)
+        return jsonify(audit_node_route_coordinates(sample_limit=sample_limit))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

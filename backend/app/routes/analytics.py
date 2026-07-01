@@ -7,6 +7,7 @@
 from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.analytics_service import get_analytics_service
+from app.services.shipment_cost_analytics_service import get_shipment_cost_analytics_service
 import logging
 import io
 from app.utils.rate_limiter import rate_limit, RateLimits
@@ -27,6 +28,64 @@ def get_dashboard():
         return jsonify(result)
     except Exception as e:
         logger.error(f"获取仪表盘数据失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@analytics_bp.route('/operations-summary', methods=['GET', 'POST'])
+@jwt_required()
+def get_operations_summary():
+    """
+    获取真实 shipment_facts 驱动的运营/成本总览。
+
+    Query/Body:
+        limit: 最大扫描 shipment_facts 数
+        trend_days: 趋势窗口天数
+        lane_limit: 返回 Top OD/城市数
+        city: 可选城市过滤
+    """
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'limit': request.args.get('limit', 50000, type=int),
+                'trend_days': request.args.get('trend_days', 30, type=int),
+                'lane_limit': request.args.get('lane_limit', 8, type=int),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+            }
+        result = get_shipment_cost_analytics_service().operations_summary(payload)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"获取真实运营成本总览失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@analytics_bp.route('/operations-scorecard', methods=['GET', 'POST'])
+@jwt_required()
+def get_operations_scorecard():
+    """
+    获取真实 shipment_facts 驱动的运营/成本 readiness scorecard。
+
+    Query/Body:
+        limit: 最大扫描 shipment_facts 数
+        trend_days: 趋势窗口天数
+        lane_limit: 返回 Top OD/城市数
+        city: 可选城市过滤
+    """
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'limit': request.args.get('limit', 50000, type=int),
+                'trend_days': request.args.get('trend_days', 30, type=int),
+                'lane_limit': request.args.get('lane_limit', 8, type=int),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+            }
+        result = get_shipment_cost_analytics_service().operations_scorecard(payload)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"获取真实运营成本评分卡失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

@@ -310,12 +310,16 @@ def recommend_order_route(order_id):
                 'success': True,
                 'data': {
                     'order_id': result.order_id,
+                    'order_number': result.order_number,
+                    'data_source': result.data_source,
                     'origin': result.origin,
                     'destination': result.destination,
                     'local_route': result.local_route,
                     'amap_route': result.amap_route,
                     'recommended_route': result.recommended_route,
-                    'recommendation_reason': result.recommendation_reason
+                    'recommendation_reason': result.recommendation_reason,
+                    'provider_status': result.provider_status,
+                    'fallback_reason': result.fallback_reason,
                 }
             })
         else:
@@ -362,12 +366,15 @@ def recommend_route_for_nodes():
             return jsonify({
                 'success': True,
                 'data': {
+                    'data_source': result.data_source,
                     'origin': result.origin,
                     'destination': result.destination,
                     'local_route': result.local_route,
                     'amap_route': result.amap_route,
                     'recommended_route': result.recommended_route,
-                    'recommendation_reason': result.recommendation_reason
+                    'recommendation_reason': result.recommendation_reason,
+                    'provider_status': result.provider_status,
+                    'fallback_reason': result.fallback_reason,
                 }
             })
         else:

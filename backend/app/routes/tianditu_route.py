@@ -397,12 +397,19 @@ def get_keys_info():
         }
     """
     try:
+        from app.services.provider_key_resolver import get_tianditu_keys, provider_key_status
         tianditu_service = get_tianditu_service()
+        key_status = provider_key_status('tianditu', get_tianditu_keys())
         
         return jsonify({
             'success': True,
             'browser_key_configured': bool(tianditu_service.browser_key),
-            'server_key_configured': bool(tianditu_service.server_key)
+            'server_key_configured': bool(tianditu_service.server_key),
+            'keys': key_status,
+            'provider': 'tianditu',
+            'provider_status': 'configured' if key_status['effective_key_configured'] else 'unavailable',
+            'degraded': not key_status['effective_key_configured'],
+            'fallback_reason': None if key_status['effective_key_configured'] else 'TIANDITU_KEY_MISSING',
         })
         
     except Exception as e:

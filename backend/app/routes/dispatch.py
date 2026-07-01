@@ -9,6 +9,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.dispatch_service import get_dispatch_service
 from app.services.smart_dispatch_service import get_smart_dispatch_service
 from app.services.dispatch_orchestration_service import get_dispatch_orchestration_service
+from app.services.dispatch_learning_dataset_service import get_dispatch_learning_dataset_service
 from app.utils.rate_limiter import rate_limit, RateLimits
 
 dispatch_bp = Blueprint('dispatch', __name__)
@@ -202,7 +203,7 @@ def apply_dispatch():
         result = service.apply(data, user_id=_current_user_id())
         status = 200 if result.get('success') else 400
         return jsonify(result), status
-    
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -218,7 +219,8 @@ def preview_dispatch():
     try:
         data = request.get_json() or {}
         service = get_dispatch_orchestration_service()
-        result = service.preview(data, user_id=_current_user_id())
+        persist = data.get('persist', True) is not False
+        result = service.preview(data, user_id=_current_user_id(), persist=persist)
         status = 200 if result.get('success') else 400
         return jsonify(result), status
     except Exception as e:
@@ -271,6 +273,284 @@ def get_dispatch_scenario(scenario_id):
         result = service.scenario_detail(scenario_id)
         status = 200 if result.get('success') else 404
         return jsonify(result), status
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/learning-dataset', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_learning_dataset():
+    """Return persisted dispatch assignments as an AI shadow training dataset."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 50, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.build_dataset(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/policy-scorer', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_policy_scorer():
+    """Compare offline shadow dispatch policies over persisted learning rows."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 50, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.score_policies(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/reward-model', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_reward_model():
+    """Train/evaluate a lightweight offline shadow reward model."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 50, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.train_reward_model(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/redispatch-simulator', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_redispatch_simulator():
+    """Run a read-only dynamic re-dispatch shadow simulation."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'delay_minutes': request.args.get('delay_minutes', 45, type=float),
+                'delay_vehicle_ids': request.args.get('delay_vehicle_ids'),
+                'unavailable_vehicle_ids': request.args.get('unavailable_vehicle_ids'),
+                'cost_multiplier': request.args.get('cost_multiplier', 1.12, type=float),
+                'provider_degradation': request.args.get('provider_degradation', 'true').lower() != 'false',
+                'reliability_drop': request.args.get('reliability_drop', 0.25, type=float),
+                'priority_order_refs': request.args.get('priority_order_refs'),
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.simulate_redispatch(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/redispatch-profiles', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_redispatch_profiles():
+    """Generate redispatch simulator profiles from real anomaly signals."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.build_redispatch_profiles(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/redispatch-scenario-generator', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_redispatch_scenario_generator():
+    """Generate read-only historical disruption scenarios for shadow replay."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.build_redispatch_scenario_generator(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/rl-shadow-runner', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_rl_shadow_runner():
+    """Run an offline RL-style shadow benchmark over redispatch episodes."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.run_rl_shadow_runner(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/fitted-q-shadow-model', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_fitted_q_shadow_model():
+    """Train/evaluate an offline fitted-Q shadow model over redispatch episodes."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.train_fitted_q_shadow_model(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/shadow-benchmark', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_shadow_benchmark():
+    """Return a unified dispatch AI/RL shadow readiness scorecard."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.build_shadow_benchmark_report(payload)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@dispatch_bp.route('/shadow-benchmark/snapshot', methods=['GET', 'POST'])
+@jwt_required()
+def dispatch_shadow_benchmark_snapshot():
+    """Export a non-persistent dispatch AI/RL shadow benchmark snapshot."""
+    try:
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+        else:
+            payload = {
+                'scenario_id': request.args.get('scenario_id', type=int),
+                'scenario_ids': request.args.get('scenario_ids'),
+                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+                'row_limit': request.args.get('row_limit', 200, type=int),
+                'top_k': request.args.get('top_k', 10, type=int),
+                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+                'tasks': request.args.get('tasks'),
+                'city': request.args.get('city') or request.args.get('destination_city'),
+                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+                'status': request.args.get('status'),
+                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+            }
+        service = get_dispatch_learning_dataset_service()
+        result = service.export_shadow_benchmark_snapshot(payload)
+        return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -557,6 +837,6 @@ def compare_solvers():
         service = get_dispatch_orchestration_service()
         result = service.compare_solvers(data)
         return jsonify(result)
-    
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

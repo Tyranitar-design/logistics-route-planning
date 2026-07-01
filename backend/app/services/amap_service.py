@@ -826,15 +826,7 @@ def get_amap_service() -> AmapService:
     """获取高德地图服务实例"""
     global _amap_service
     if _amap_service is None:
-        try:
-            from flask import current_app
-            web_key = current_app.config.get('AMAP_WEB_KEY')
-            service_key = current_app.config.get('AMAP_SERVICE_KEY')
-            _amap_service = AmapService(web_key, service_key)
-        except:
-            # 在应用上下文外使用默认配置
-            import os
-            web_key = os.environ.get('AMAP_WEB_KEY')
-            service_key = os.environ.get('AMAP_SERVICE_KEY')
-            _amap_service = AmapService(web_key, service_key)
+        from app.services.provider_key_resolver import get_amap_keys
+        keys = get_amap_keys()
+        _amap_service = AmapService(keys.get('web_key'), keys.get('service_key'))
     return _amap_service

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from app.models import db
 from app.models import Node, Route, Order, Vehicle
+from app.models.layered_data import ShipmentFact
 from app.services.path_algorithm import get_path_service
 from app.services.amap_service import get_amap_service
 
@@ -21,6 +22,8 @@ class OrderRouteRecommendation:
     """订单路线推荐结果"""
     success: bool
     order_id: int = None
+    order_number: str = None
+    data_source: str = None
     origin: Dict = None
     destination: Dict = None
     
@@ -33,6 +36,8 @@ class OrderRouteRecommendation:
     # 推荐结果
     recommended_route: Dict = None
     recommendation_reason: str = None
+    provider_status: str = None
+    fallback_reason: str = None
     
     error: str = None
 
@@ -61,20 +66,47 @@ class OrderRouteService:
         Returns:
             订单路线推荐结果
         """
+        data_source = 'manual_nodes'
+        order_number = None
+        origin_name = None
+        destination_name = None
+        origin_lng = None
+        origin_lat = None
+        dest_lng = None
+        dest_lat = None
+
         # 获取节点信息
         if order_id:
             order = Order.query.get(order_id)
-            if not order:
-                return OrderRouteRecommendation(success=False, error='订单不存在')
-            origin_id = order.pickup_node_id
-            destination_id = order.delivery_node_id
-            # 回退：如果没有节点 ID，用名称构建
-            origin_name = order.origin_name
-            destination_name = order.destination_name
-            origin_lng = order.origin_lng
-            origin_lat = order.origin_lat
-            dest_lng = order.destination_lng
-            dest_lat = order.destination_lat
+            if order:
+                data_source = 'orders'
+                order_number = order.order_number
+                origin_id = order.pickup_node_id
+                destination_id = order.delivery_node_id
+                # 回退：如果没有节点 ID，用名称构建
+                origin_name = order.origin_name
+                destination_name = order.destination_name
+                origin_lng = order.origin_lng
+                origin_lat = order.origin_lat
+                dest_lng = order.destination_lng
+                dest_lat = order.destination_lat
+            else:
+                fact = self._find_shipment_fact_order(order_id)
+                if not fact:
+                    return OrderRouteRecommendation(success=False, error='订单不存在')
+                data_source = 'shipment_fact'
+                order_number = fact.external_order_id or fact.external_shipment_id or f'SHIP-{fact.id}'
+                origin_name = fact.origin_city_std or fact.origin_city_raw
+                destination_name = fact.destination_city_std or fact.destination_city_raw
+                origin_lng = fact.origin_lng
+                origin_lat = fact.origin_lat
+                dest_lng = fact.destination_lng
+                dest_lat = fact.destination_lat
+                weight = weight or fact.weight_kg or 0
+                origin_node = self._find_node_by_city(origin_name)
+                destination_node = self._find_node_by_city(destination_name)
+                origin_id = origin_node.id if origin_node else None
+                destination_id = destination_node.id if destination_node else None
 
         origin = Node.query.get(origin_id) if origin_id else None
         destination = Node.query.get(destination_id) if destination_id else None
@@ -82,21 +114,43 @@ class OrderRouteService:
         # 构建起点终点信息
         if origin:
             result_origin = origin.to_dict()
+            result_origin['coordinate_source'] = 'node'
+            if data_source == 'shipment_fact' and origin_lng and origin_lat:
+                result_origin['shipment_longitude'] = origin_lng
+                result_origin['shipment_latitude'] = origin_lat
         elif origin_name:
-            result_origin = {'name': origin_name, 'longitude': origin_lng, 'latitude': origin_lat}
+            result_origin = {
+                'id': None,
+                'name': origin_name,
+                'longitude': origin_lng,
+                'latitude': origin_lat,
+                'coordinate_source': data_source,
+            }
         else:
             return OrderRouteRecommendation(success=False, error='订单没有设置起点')
 
         if destination:
             result_dest = destination.to_dict()
+            result_dest['coordinate_source'] = 'node'
+            if data_source == 'shipment_fact' and dest_lng and dest_lat:
+                result_dest['shipment_longitude'] = dest_lng
+                result_dest['shipment_latitude'] = dest_lat
         elif destination_name:
-            result_dest = {'name': destination_name, 'longitude': dest_lng, 'latitude': dest_lat}
+            result_dest = {
+                'id': None,
+                'name': destination_name,
+                'longitude': dest_lng,
+                'latitude': dest_lat,
+                'coordinate_source': data_source,
+            }
         else:
             return OrderRouteRecommendation(success=False, error='订单没有设置终点')
 
         result = OrderRouteRecommendation(
             success=True,
             order_id=order_id,
+            order_number=order_number,
+            data_source=data_source,
             origin=result_origin,
             destination=result_dest
         )
@@ -111,9 +165,11 @@ class OrderRouteService:
                 logger.warning(f"本地算法推荐失败: {e}")
 
         # 2. 高德地图路线推荐（需要有经纬度）
-        if result_origin.get('longitude') and result_origin.get('latitude') and result_dest.get('longitude') and result_dest.get('latitude'):
+        amap_origin = self._route_point_for_provider(result_origin)
+        amap_destination = self._route_point_for_provider(result_dest)
+        if amap_origin.get('longitude') and amap_origin.get('latitude') and amap_destination.get('longitude') and amap_destination.get('latitude'):
             try:
-                amap_result = self._get_amap_route(result_origin, result_dest)
+                amap_result = self._get_amap_route(amap_origin, amap_destination)
                 if amap_result['success']:
                     result.amap_route = amap_result
             except Exception as e:
@@ -127,8 +183,61 @@ class OrderRouteService:
             result.amap_route,
             prefer_source
         )
+        provider_route = result.recommended_route or result.amap_route or result.local_route or {}
+        result.provider_status = provider_route.get('provider_status') or provider_route.get('source')
+        result.fallback_reason = provider_route.get('fallback_reason')
         
         return result
+
+    def _find_shipment_fact_order(self, order_id: int):
+        return ShipmentFact.query.filter(
+            db.or_(
+                ShipmentFact.id == order_id,
+                ShipmentFact.external_order_id == str(order_id),
+                ShipmentFact.external_shipment_id == str(order_id),
+            )
+        ).first()
+
+    @staticmethod
+    def _normalize_place_name(value: str) -> str:
+        text = (value or '').strip()
+        for token in ['市', '特别行政区', '物流节点', '（由真实运单网络自动生成）', '(由真实运单网络自动生成)']:
+            text = text.replace(token, '')
+        return text.strip()
+
+    def _find_node_by_city(self, city_name: str):
+        if not city_name:
+            return None
+
+        candidates = []
+        for value in [city_name, self._normalize_place_name(city_name)]:
+            value = (value or '').strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        for candidate in candidates:
+            node = Node.query.filter(
+                db.or_(
+                    Node.city == candidate,
+                    Node.name.contains(candidate),
+                    Node.address.contains(candidate),
+                )
+            ).first()
+            if node:
+                return node
+        return None
+
+    @staticmethod
+    def _route_point_for_provider(point: Dict) -> Dict:
+        longitude = point.get('shipment_longitude') or point.get('longitude')
+        latitude = point.get('shipment_latitude') or point.get('latitude')
+        return {
+            'id': point.get('id'),
+            'name': point.get('name'),
+            'longitude': longitude,
+            'latitude': latitude,
+            'coordinate_source': point.get('coordinate_source'),
+        }
     
     def _get_local_route(self, origin_id: int, destination_id: int) -> Dict:
         """获取本地算法路线"""
@@ -144,6 +253,10 @@ class OrderRouteService:
         result = {
             'success': True,
             'source': 'local',
+            'provider_status': 'ok',
+            'distance_source': 'route_table_or_haversine_fallback',
+            'path_source': 'local_route_graph',
+            'fallback_reason': None,
             'algorithms': {}
         }
         
@@ -228,6 +341,13 @@ class OrderRouteService:
         amap_result = {
             'success': True,
             'source': 'amap',
+            'provider': result.get('provider'),
+            'provider_status': result.get('provider_status'),
+            'degraded': result.get('degraded'),
+            'fallback_reason': result.get('fallback_reason'),
+            'authenticity': result.get('authenticity'),
+            'distance_source': 'haversine_corrected' if result.get('degraded') else 'amap_driving_route',
+            'path_source': 'fallback_endpoint_polyline' if result.get('degraded') else 'amap_driving_route',
             'routes': [],
             'origin_name': o_name,
             'destination_name': d_name
@@ -241,7 +361,15 @@ class OrderRouteService:
                 'tolls': route.get('tolls', 0),
                 'toll_distance_km': round(route.get('toll_distance', 0) / 1000, 2),
                 'strategy': route.get('strategy'),
-                'main_roads': route.get('main_roads', [])
+                'main_roads': route.get('main_roads', []),
+                'provider': route.get('provider', result.get('provider')),
+                'provider_status': route.get('provider_status', result.get('provider_status')),
+                'degraded': route.get('degraded', result.get('degraded')),
+                'fallback_reason': route.get('fallback_reason', result.get('fallback_reason')),
+                'authenticity': route.get('authenticity', result.get('authenticity')),
+                'distance_source': 'haversine_corrected' if route.get('degraded') else 'amap_driving_route',
+                'path_source': 'fallback_endpoint_polyline' if route.get('degraded') else 'amap_driving_route',
+                'polyline': route.get('polyline'),
             }
             amap_result['routes'].append(route_info)
         
@@ -255,6 +383,7 @@ class OrderRouteService:
                 routes[0]['duration'],
                 routes[0].get('tolls', 0)
             )
+            amap_result['polyline'] = routes[0].get('polyline')
         
         return amap_result
     
@@ -348,6 +477,16 @@ class OrderRouteService:
         """
         order = Order.query.get(order_id)
         if not order:
+            fact = self._find_shipment_fact_order(order_id)
+            if fact:
+                return {
+                    'success': True,
+                    'message': '真实运单保持只读，推荐路线已生成但未写回 shipment_facts',
+                    'data_source': 'shipment_fact',
+                    'order_id': fact.id,
+                    'order_number': fact.external_order_id or fact.external_shipment_id,
+                    'applied': False,
+                }
             return {'success': False, 'error': '订单不存在'}
         
         # 更新订单的预估成本和时间

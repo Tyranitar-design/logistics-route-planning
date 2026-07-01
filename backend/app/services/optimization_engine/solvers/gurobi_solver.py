@@ -15,6 +15,7 @@ Gurobi 求解器
 
 import numpy as np
 from typing import List, Optional, Dict, Any
+from app.services.gurobi_capability_service import get_gurobi_capability_service
 from ..base import (
     OptimizationSolver,
     OptimizationProblem,
@@ -52,11 +53,7 @@ class GurobiSolver(OptimizationSolver):
     
     def is_available(self) -> bool:
         """检查 Gurobi 是否可用"""
-        try:
-            import gurobipy as gp
-            return True
-        except ImportError:
-            return False
+        return get_gurobi_capability_service().is_available(require_smoke=False)
     
     @timeit
     def solve(self,
@@ -249,15 +246,11 @@ class GurobiVRPTWSolver(OptimizationSolver):
     """
     
     def __init__(self, **kwargs):
-        super().__init__("Gurobi-VRPTW", SolverType.GUROBI)
+        super().__init__("Gurobi-VRPTW", SolverType.GUROBI_VRPTW)
         self.parameters.update(kwargs)
     
     def is_available(self) -> bool:
-        try:
-            import gurobipy as gp
-            return True
-        except ImportError:
-            return False
+        return get_gurobi_capability_service().is_available(require_smoke=False)
     
     @timeit
     def solve(self,

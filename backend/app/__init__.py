@@ -106,6 +106,8 @@ def create_app(config_name='default'):
     from app.routes.network import network_bp
     from app.routes.tianditu_route import tianditu_bp
     from app.routes.optimization import optimization_bp
+    from app.routes.ai_prediction import register_ai_prediction_routes
+    from app.routes.ai_anomaly import register_ai_anomaly_routes
 
     # 注册限流错误处理器
     @app.errorhandler(429)
@@ -215,6 +217,8 @@ def create_app(config_name='default'):
     register_multimodal_routes(app)
     register_anomaly_routes(app)
     register_data_analytics_routes(app)
+    register_ai_prediction_routes(app)
+    register_ai_anomaly_routes(app)
     
     # 注册优化引擎路由
     app.register_blueprint(optimization_bp, url_prefix='/api/optimization')

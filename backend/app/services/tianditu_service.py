@@ -39,6 +39,10 @@ class TiandituRouteResult:
     steps: List[Dict] = field(default_factory=list)  # 路段详情
     simple_steps: List[Dict] = field(default_factory=list)  # 简化路段
     toll_status: int = 0     # 是否收费路段
+    provider: str = 'tianditu'
+    provider_status: str = 'ok'
+    degraded: bool = False
+    fallback_reason: str = None
     error: str = None
 
 
@@ -97,6 +101,8 @@ class TiandituService:
         import json
         
         key = self._get_server_key() if use_server_key else self._get_browser_key()
+        if not key:
+            return '{"error": "TIANDITU_KEY_MISSING"}'
         
         url = f"{self.BASE_URL}/{endpoint}"
         
@@ -178,6 +184,9 @@ class TiandituService:
             if result is None:
                 return TiandituRouteResult(
                     success=False,
+                    provider_status='degraded',
+                    degraded=True,
+                    fallback_reason='TIANDITU_ROUTE_RESPONSE_INVALID',
                     error='响应格式错误'
                 )
             
@@ -244,9 +253,13 @@ class TiandituService:
             
         except ET.ParseError as e:
             logger.error(f"XML 解析失败: {e}")
+            fallback_reason = 'TIANDITU_KEY_MISSING' if 'TIANDITU_KEY_MISSING' in xml_text else f'响应解析失败: {str(e)}'
             return TiandituRouteResult(
                 success=False,
-                error=f'响应解析失败: {str(e)}'
+                provider_status='unavailable' if fallback_reason == 'TIANDITU_KEY_MISSING' else 'degraded',
+                degraded=True,
+                fallback_reason=fallback_reason,
+                error=fallback_reason
             )
     
     def _get_elem_text(self, elem) -> str:
@@ -407,7 +420,12 @@ class TiandituService:
         if not route.success:
             return {
                 'success': False,
-                'error': route.error
+                'error': route.error,
+                'source': 'tianditu',
+                'provider': route.provider,
+                'provider_status': route.provider_status,
+                'degraded': route.degraded,
+                'fallback_reason': route.fallback_reason or route.error,
             }
         
         return {
@@ -418,7 +436,11 @@ class TiandituService:
             'polyline': route.polyline,  # [[lng, lat], ...] 格式，前端可直接使用
             'steps': route.steps,
             'simple_steps': route.simple_steps,
-            'coordinates_count': len(route.polyline)
+            'coordinates_count': len(route.polyline),
+            'provider': route.provider,
+            'provider_status': route.provider_status,
+            'degraded': route.degraded,
+            'fallback_reason': route.fallback_reason,
         }
 
 
@@ -430,15 +452,7 @@ def get_tianditu_service() -> TiandituService:
     """获取天地图服务实例"""
     global _tianditu_service
     if _tianditu_service is None:
-        try:
-            from flask import current_app
-            browser_key = current_app.config.get('TIANDITU_BROWSER_KEY')
-            server_key = current_app.config.get('TIANDITU_SERVER_KEY')
-            _tianditu_service = TiandituService(browser_key, server_key)
-        except:
-            # 在应用上下文外使用默认配置
-            import os
-            browser_key = os.environ.get('TIANDITU_BROWSER_KEY')
-            server_key = os.environ.get('TIANDITU_SERVER_KEY')
-            _tianditu_service = TiandituService(browser_key, server_key)
+        from app.services.provider_key_resolver import get_tianditu_keys
+        keys = get_tianditu_keys()
+        _tianditu_service = TiandituService(keys.get('browser_key'), keys.get('server_key'))
     return _tianditu_service

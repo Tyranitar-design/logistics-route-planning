@@ -12,6 +12,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _first_env(*names, default=''):
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
 class Config:
     """基础配置"""
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
@@ -50,12 +58,41 @@ class Config:
                     'http://localhost', 'http://localhost:80', 'http://localhost:8080']
     
     # 高德地图API配置
-    AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '')
-    AMAP_SERVICE_KEY = os.environ.get('AMAP_SERVICE_KEY', '')
+    AMAP_WEB_KEY = _first_env(
+        'AMAP_WEB_KEY',
+        'AMAP_BROWSER_KEY',
+        'AMAP_JS_KEY',
+        'GAODE_WEB_KEY',
+        'GAODE_BROWSER_KEY',
+        'GAODE_FRONTEND_KEY',
+        'GAODE_MAP_FRONTEND_KEY',
+    )
+    AMAP_SERVICE_KEY = _first_env(
+        'AMAP_SERVICE_KEY',
+        'AMAP_KEY',
+        'GAODE_SERVICE_KEY',
+        'GAODE_MAP_KEY',
+        'GAODE_REST_KEY',
+        'GAODE_BACKEND_KEY',
+        'GAODE_MAP_BACKEND_KEY',
+    )
     
     # 天地图API配置
-    TIANDITU_BROWSER_KEY = os.environ.get('TIANDITU_BROWSER_KEY', '')
-    TIANDITU_SERVER_KEY = os.environ.get('TIANDITU_SERVER_KEY', '')
+    TIANDITU_BROWSER_KEY = _first_env(
+        'TIANDITU_BROWSER_KEY',
+        'TIANDITU_WEB_KEY',
+        'TIANDITU_JS_KEY',
+        'TDT_BROWSER_KEY',
+        'TDT_WEB_KEY',
+    )
+    TIANDITU_SERVER_KEY = _first_env(
+        'TIANDITU_SERVER_KEY',
+        'TIANDITU_KEY',
+        'TIANDITU_API_KEY',
+        'TDT_SERVER_KEY',
+        'TDT_KEY',
+        'TDT_API_KEY',
+    )
 
 
 class DevelopmentConfig(Config):

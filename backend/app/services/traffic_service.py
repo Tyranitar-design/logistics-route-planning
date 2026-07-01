@@ -4,18 +4,13 @@
 实时路况服务 - 集成高德地图路况 API
 """
 
-import requests
-import math
-import os
-from datetime import datetime
-from flask import current_app
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TrafficService:
     """实时路况服务"""
-    
-    # 高德地图 API Key
-    AMAP_KEY = os.environ.get('AMAP_SERVICE_KEY') or os.environ.get('AMAP_WEB_KEY') or os.environ.get('AMAP_KEY', '')
     
     # 路况等级
     TRAFFIC_LEVELS = {
@@ -26,6 +21,32 @@ class TrafficService:
         4: {'name': '中度拥堵', 'color': '#ff9900', 'speed_ratio': 0.4},
         5: {'name': '严重拥堵', 'color': '#ff0000', 'speed_ratio': 0.2}
     }
+
+    def _amap_request(self, endpoint, params):
+        """Use the unified AMap requester so traffic follows route provider behavior."""
+        from app.services.amap_service import get_amap_service
+        service = get_amap_service()
+        return service._make_request(endpoint, {k: v for k, v in (params or {}).items() if v not in (None, '')})
+
+    def _provider_failure(self, result, default_error):
+        reason = result.get('fallback_reason') or result.get('info') or default_error
+        return {
+            'success': False,
+            'error': reason,
+            'provider': result.get('provider', 'amap'),
+            'provider_status': result.get('provider_status', 'degraded'),
+            'degraded': True,
+            'fallback_reason': reason,
+        }
+
+    def _with_provider_success(self, payload):
+        payload.update({
+            'provider': 'amap',
+            'provider_status': 'ok',
+            'degraded': False,
+            'fallback_reason': None,
+        })
+        return payload
     
     def get_road_traffic(self, city, road_name=None):
         """
@@ -39,32 +60,29 @@ class TrafficService:
             路况信息
         """
         try:
-            url = 'https://restapi.amap.com/v3/traffic/status/road'
             params = {
-                'key': self.AMAP_KEY,
                 'city': city,
                 'name': road_name,
                 'extensions': 'all'
             }
-            
-            response = requests.get(url, params=params, timeout=10)
-            data = response.json()
+            data = self._amap_request('traffic/status/road', params)
             
             if data.get('status') == '1':
-                return {
+                return self._with_provider_success({
                     'success': True,
                     'traffic': self._parse_traffic_data(data)
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': data.get('info', '获取路况失败')
-                }
+                })
+            return self._provider_failure(data, '获取路况失败')
         
         except Exception as e:
+            logger.warning(f"道路路况查询失败: {e}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
             }
     
     def get_rectangle_traffic(self, location, level=5):
@@ -79,32 +97,29 @@ class TrafficService:
             路况信息
         """
         try:
-            url = 'https://restapi.amap.com/v3/traffic/status/rectangle'
             params = {
-                'key': self.AMAP_KEY,
                 'rectangle': location,
                 'level': level,
                 'extensions': 'all'
             }
-            
-            response = requests.get(url, params=params, timeout=10)
-            data = response.json()
+            data = self._amap_request('traffic/status/rectangle', params)
             
             if data.get('status') == '1':
-                return {
+                return self._with_provider_success({
                     'success': True,
                     'traffic': self._parse_rectangle_data(data)
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': data.get('info', '获取路况失败')
-                }
+                })
+            return self._provider_failure(data, '获取路况失败')
         
         except Exception as e:
+            logger.warning(f"区域路况查询失败: {e}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
             }
     
     def check_route_traffic(self, origin, destination, waypoints=None):
@@ -120,31 +135,37 @@ class TrafficService:
             路线路况信息
         """
         try:
-            url = 'https://restapi.amap.com/v3/direction/driving'
             params = {
-                'key': self.AMAP_KEY,
                 'origin': origin,
                 'destination': destination,
                 'waypoints': waypoints,
                 'extensions': 'all',
                 'strategy': 10  # 返回多条路径
             }
-            
-            response = requests.get(url, params=params, timeout=15)
-            data = response.json()
+            data = self._amap_request('direction/driving', params)
             
             if data.get('status') == '1':
-                return self._parse_route_traffic(data)
-            else:
+                parsed = self._parse_route_traffic(data)
+                if parsed.get('success'):
+                    return self._with_provider_success(parsed)
                 return {
-                    'success': False,
-                    'error': data.get('info', '获取路线路况失败')
+                    **parsed,
+                    'provider': 'amap',
+                    'provider_status': 'degraded',
+                    'degraded': True,
+                    'fallback_reason': parsed.get('error') or 'AMAP_ROUTE_TRAFFIC_PARSE_FAILED',
                 }
+            return self._provider_failure(data, '获取路线路况失败')
         
         except Exception as e:
+            logger.warning(f"路线路况查询失败: {e}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'provider': 'amap',
+                'provider_status': 'degraded',
+                'degraded': True,
+                'fallback_reason': str(e),
             }
     
     def analyze_traffic_and_avoid(self, origin, destination, waypoints=None, threshold=4):
@@ -164,7 +185,22 @@ class TrafficService:
         route_traffic = self.check_route_traffic(origin, destination, waypoints)
         
         if not route_traffic.get('success'):
-            return route_traffic
+            reason = route_traffic.get('fallback_reason') or route_traffic.get('error') or 'TRAFFIC_PROVIDER_UNAVAILABLE'
+            return {
+                'success': True,
+                'has_congestion': False,
+                'congestions': [],
+                'original_route': {},
+                'alternatives': [],
+                'recommendation': {
+                    'action': 'manual_check',
+                    'message': '实时路况服务暂不可用，请按路线结果行驶前人工确认路况',
+                },
+                'provider': route_traffic.get('provider', 'amap'),
+                'provider_status': route_traffic.get('provider_status', 'degraded'),
+                'degraded': True,
+                'fallback_reason': reason,
+            }
         
         # 分析拥堵路段
         congestions = []
@@ -185,14 +221,14 @@ class TrafficService:
         if congestions:
             alternatives = self._get_alternative_routes(origin, destination, threshold)
         
-        return {
+        return self._with_provider_success({
             'success': True,
             'has_congestion': len(congestions) > 0,
             'congestions': congestions,
             'original_route': route_traffic.get('route', {}),
             'alternatives': alternatives,
             'recommendation': self._generate_recommendation(congestions, alternatives)
-        }
+        })
     
     def _parse_traffic_data(self, data):
         """解析道路路况数据"""
@@ -298,8 +334,6 @@ class TrafficService:
     def _get_alternative_routes(self, origin, destination, threshold):
         """获取备选路线（避开拥堵）"""
         try:
-            url = 'https://restapi.amap.com/v3/direction/driving'
-            
             # 尝试不同的策略
             strategies = [
                 {'strategy': 2, 'name': '距离最短'},
@@ -311,15 +345,13 @@ class TrafficService:
             
             for strategy in strategies:
                 params = {
-                    'key': self.AMAP_KEY,
                     'origin': origin,
                     'destination': destination,
                     'strategy': strategy['strategy'],
                     'extensions': 'all'
                 }
                 
-                response = requests.get(url, params=params, timeout=10)
-                data = response.json()
+                data = self._amap_request('direction/driving', params)
                 
                 if data.get('status') == '1' and data.get('route', {}).get('paths'):
                     path = data['route']['paths'][0]
@@ -343,6 +375,7 @@ class TrafficService:
             return alternatives[:3]  # 最多返回3条备选路线
         
         except Exception as e:
+            logger.warning(f"备选路线路况查询失败: {e}")
             return []
     
     def _calculate_traffic_score(self, path):

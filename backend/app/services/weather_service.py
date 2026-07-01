@@ -573,13 +573,7 @@ def get_weather_service() -> WeatherService:
     """获取天气服务实例"""
     global _weather_service
     if _weather_service is None:
-        try:
-            from flask import current_app
-            api_key = current_app.config.get('AMAP_SERVICE_KEY') or current_app.config.get('AMAP_WEB_KEY')
-            _weather_service = WeatherService(api_key)
-        except:
-            # 在应用上下文外使用环境变量
-            import os
-            api_key = os.environ.get('AMAP_SERVICE_KEY') or os.environ.get('AMAP_WEB_KEY')
-            _weather_service = WeatherService(api_key)
+        from app.services.provider_key_resolver import get_amap_keys
+        keys = get_amap_keys()
+        _weather_service = WeatherService(keys.get('effective_key'))
     return _weather_service

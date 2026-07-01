@@ -55,6 +55,86 @@ def _route_payload(result, strategy):
     }
 
 
+def _probe_status(success, provider='amap', provider_status='degraded', degraded=True, fallback_reason=None, extra=None):
+    payload = {
+        'success': bool(success),
+        'provider': provider,
+        'provider_status': provider_status,
+        'degraded': bool(degraded),
+        'fallback_reason': fallback_reason,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+@amap_bp.route('/provider-health', methods=['GET'])
+@jwt_required()
+def provider_health():
+    """Safe AMap provider diagnostics. Does not expose API key values."""
+    try:
+        from app.services.provider_key_resolver import get_amap_keys, provider_key_status
+
+        probe = str(request.args.get('probe', '0')).lower() in ('1', 'true', 'yes')
+        keys = get_amap_keys()
+        payload = {
+            'success': True,
+            'provider': 'amap',
+            'keys': provider_key_status('amap', keys),
+            'probed': probe,
+            'components': {},
+        }
+
+        if not probe:
+            return jsonify(payload)
+
+        service = get_amap_service()
+
+        route_result = service.driving_route(
+            (116.4074, 39.9042),
+            (116.3975, 39.9087),
+            strategy=0,
+            show_traffic=False,
+        )
+        payload['components']['route'] = _probe_status(
+            route_result.success and not route_result.degraded,
+            provider=route_result.provider,
+            provider_status=route_result.provider_status,
+            degraded=route_result.degraded,
+            fallback_reason=route_result.fallback_reason,
+            extra={'distance_km': round(route_result.distance / 1000, 3) if route_result.distance else 0},
+        )
+
+        from app.services.weather_service import get_weather_service
+        weather_result = get_weather_service().get_weather_now('北京')
+        weather_data = weather_result.get('data') or {}
+        payload['components']['weather'] = _probe_status(
+            weather_result.get('success') and not weather_data.get('degraded'),
+            provider=weather_data.get('provider', weather_result.get('provider', 'amap')),
+            provider_status=weather_data.get('provider_status', weather_result.get('provider_status', 'degraded')),
+            degraded=weather_data.get('degraded', weather_result.get('degraded', True)),
+            fallback_reason=weather_data.get('fallback_reason') or weather_result.get('fallback_reason') or weather_result.get('error'),
+        )
+
+        traffic_result = service.traffic_around((116.4074, 39.9042), 1000)
+        payload['components']['traffic'] = _probe_status(
+            traffic_result.success and not traffic_result.degraded,
+            provider=traffic_result.provider,
+            provider_status=traffic_result.provider_status,
+            degraded=traffic_result.degraded,
+            fallback_reason=traffic_result.fallback_reason or traffic_result.error,
+        )
+
+        return jsonify(payload)
+    except Exception as e:
+        logger.error(f"高德 Provider 健康诊断失败: {e}")
+        return jsonify({
+            'success': False,
+            'provider': 'amap',
+            'error': str(e),
+        }), 500
+
+
 @amap_bp.route('/geocode', methods=['GET'])
 @jwt_required()
 def geocode():
@@ -594,6 +674,56 @@ def compare_routes():
 
     except Exception as e:
         logger.error(f"路线对比失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@amap_bp.route('/route/local-benchmark', methods=['POST'])
+@jwt_required()
+def local_route_benchmark():
+    """
+    Unified local route algorithm benchmark.
+
+    Body:
+        origin_id: origin node id
+        destination_id: destination node id
+        include_provider: include AMap route candidate (default true)
+        strategy: provider strategy label/id for metadata
+    """
+    try:
+        data = request.get_json() or {}
+        origin_id = data.get('origin_id')
+        destination_id = data.get('destination_id')
+
+        if not origin_id or not destination_id:
+            return jsonify({'success': False, 'error': '请提供起点和终点节点ID'}), 400
+
+        try:
+            origin_id = int(origin_id)
+            destination_id = int(destination_id)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': '起点和终点节点ID必须是整数'}), 400
+
+        include_provider = data.get('include_provider', True)
+        if isinstance(include_provider, str):
+            include_provider = include_provider.lower() not in ('0', 'false', 'no')
+        provider_sources = data.get('provider_sources') or data.get('providers')
+
+        from app.services.local_route_benchmark_service import LocalRouteBenchmarkService
+
+        result = LocalRouteBenchmarkService().benchmark(
+            origin_id,
+            destination_id,
+            include_provider=bool(include_provider),
+            strategy=data.get('strategy', 0),
+            provider_sources=provider_sources,
+        )
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"本地路径算法基准对比失败: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500

@@ -101,6 +101,75 @@ def test_amap_service_reports_key_unavailable_when_missing(monkeypatch):
     assert result["fallback_reason"] == "AMAP_KEY_MISSING"
 
 
+def test_provider_key_resolver_accepts_aliases_without_exposing_values(monkeypatch):
+    secret_value = "alias-secret-should-not-be-returned"
+    for name in [
+        "AMAP_SERVICE_KEY",
+        "AMAP_WEB_KEY",
+        "AMAP_KEY",
+        "TIANDITU_SERVER_KEY",
+        "TIANDITU_KEY",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AMAP_KEY", secret_value)
+    monkeypatch.setenv("TIANDITU_KEY", "tianditu-secret-should-not-be-returned")
+
+    resolver = _reload_module("app.services.provider_key_resolver")
+
+    amap_status = resolver.provider_key_status("amap", resolver.get_amap_keys())
+    tianditu_status = resolver.provider_key_status("tianditu", resolver.get_tianditu_keys())
+
+    assert amap_status["effective_key_configured"] is True
+    assert amap_status["effective_key_source"] == "AMAP_KEY"
+    assert tianditu_status["effective_key_configured"] is True
+    assert tianditu_status["effective_key_source"] == "TIANDITU_KEY"
+    assert secret_value not in str(amap_status)
+    assert "tianditu-secret-should-not-be-returned" not in str(tianditu_status)
+
+
+def test_amap_provider_health_reports_key_status_without_secret(monkeypatch):
+    secret_value = "provider-health-secret"
+    monkeypatch.setenv("AMAP_KEY", secret_value)
+    client, headers = _build_client(monkeypatch)
+
+    response = client.get("/api/amap/provider-health", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["keys"]["effective_key_configured"] is True
+    assert secret_value not in str(payload)
+    assert payload["probed"] is False
+    assert payload["components"] == {}
+
+
+def test_traffic_analyze_degrades_without_breaking_route_panel(monkeypatch):
+    import app.services.amap_service as amap_service_module
+    from app.services.traffic_service import TrafficService
+
+    class FakeAmapService:
+        def _make_request(self, endpoint, params):
+            return {
+                "status": "0",
+                "info": "INVALID_USER_KEY",
+                "provider": "amap",
+                "provider_status": "degraded",
+                "degraded": True,
+                "fallback_reason": "INVALID_USER_KEY",
+            }
+
+    monkeypatch.setattr(amap_service_module, "get_amap_service", lambda: FakeAmapService())
+
+    result = TrafficService().analyze_traffic_and_avoid("116.4074,39.9042", "116.3975,39.9087")
+
+    assert result["success"] is True
+    assert result["degraded"] is True
+    assert result["provider_status"] == "degraded"
+    assert result["fallback_reason"] == "INVALID_USER_KEY"
+    assert result["has_congestion"] is False
+    assert result["recommendation"]["action"] == "manual_check"
+
+
 def test_driving_route_returns_provider_and_authenticity(monkeypatch):
     client, headers = _build_client(monkeypatch)
 

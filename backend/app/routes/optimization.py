@@ -16,6 +16,12 @@ from app.services.precise_distance_provider import get_precise_distance_provider
 from app.services.vrp_problem_builder import VRPProblemBuilder
 from app.services.solver_recommendation_engine import SolverRecommendationEngine
 from app.services.result_evaluator import ResultEvaluator
+from app.services.gurobi_capability_service import get_gurobi_capability_service
+from app.services.gurobi_assignment_service import get_gurobi_assignment_service
+from app.services.gurobi_vrp_service import get_gurobi_vrp_service
+from app.services.gurobi_network_design_service import get_gurobi_network_design_service
+from app.services.solver_benchmark_service import get_solver_benchmark_service
+from app.services.route_sequence_benchmark_service import get_route_sequence_benchmark_service
 from app.services.optimization_engine import (
     SolverFactory,
     VRPProblem,
@@ -33,6 +39,13 @@ optimization_bp = Blueprint('optimization', __name__)
 problem_builder = VRPProblemBuilder()
 recommendation_engine = SolverRecommendationEngine()
 evaluator = ResultEvaluator()
+
+
+def _bool_query_arg(name: str, default: bool = False) -> bool:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _build_vrp_data_from_request(data: Dict[str, Any]) -> VRPData:
@@ -103,18 +116,195 @@ def list_solvers():
         }
     """
     solvers = []
+    gurobi_health = get_gurobi_capability_service().check(run_smoke=False)
     
     for solver_type in SolverType:
         info = SolverFactory.get_solver_info(solver_type)
-        solvers.append({
+        item = {
             "type": solver_type.value,
             "name": info.get("name", solver_type.value),
             "available": SolverFactory.is_available(solver_type),
             "description": info.get("description", ""),
             "best_for": info.get("best_for", "")
-        })
+        }
+        if solver_type in {SolverType.GUROBI, SolverType.GUROBI_VRPTW}:
+            item.update({
+                "provider_status": gurobi_health["provider_status"],
+                "fallback_reason": gurobi_health["fallback_reason"],
+                "authenticity_level": gurobi_health["authenticity_level"],
+                "checks": gurobi_health["checks"],
+            })
+        solvers.append(item)
     
     return jsonify({"solvers": solvers})
+
+
+@optimization_bp.route('/gurobi/health', methods=['GET'])
+def gurobi_health():
+    """
+    Return safe Gurobi runtime capability status.
+
+    Query:
+        smoke=1  可选，运行一个 1 变量微型模型验证 license/runtime。
+    """
+    run_smoke = _bool_query_arg("smoke", False)
+    status = get_gurobi_capability_service().check(run_smoke=run_smoke)
+    return jsonify({
+        "success": True,
+        **status,
+    })
+
+
+@optimization_bp.route('/gurobi/smoke', methods=['POST'])
+def gurobi_smoke():
+    """Run a safe one-variable Gurobi smoke solve."""
+    status = get_gurobi_capability_service().check(run_smoke=True)
+    return jsonify({
+        "success": True,
+        **status,
+    })
+
+
+@optimization_bp.route('/gurobi/vehicle-assignment', methods=['POST'])
+def gurobi_vehicle_assignment():
+    """
+    Solve a small vehicle-assignment MILP.
+
+    Request Body:
+        {
+            "solver": "auto" | "gurobi" | "greedy",
+            "orders": [{"id": "...", "weight_tons": 2.0, "volume_m3": 8.0, "priority": "high"}],
+            "vehicles": [{"id": "...", "capacity_weight_tons": 8.0, "capacity_volume_m3": 24.0}]
+        }
+    """
+    payload = request.get_json(silent=True) or {}
+    result = get_gurobi_assignment_service().solve(payload)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/gurobi/vehicle-assignment-demo', methods=['GET'])
+def gurobi_vehicle_assignment_demo():
+    """Run the bundled small vehicle-assignment demo."""
+    service = get_gurobi_assignment_service()
+    result = service.solve(service.demo_payload())
+    return jsonify(result)
+
+
+@optimization_bp.route('/gurobi/vrp', methods=['POST'])
+def gurobi_vrp():
+    """
+    Solve a small CVRP instance with Gurobi when available.
+
+    Request Body:
+        {
+            "solver": "auto" | "gurobi" | "greedy",
+            "n_vehicles": 2,
+            "vehicle_capacity": 7,
+            "demands": [2, 3, 4, 2],
+            "distance_matrix": [[0, ...], ...]
+        }
+    """
+    payload = request.get_json(silent=True) or {}
+    result = get_gurobi_vrp_service().solve(payload)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/gurobi/vrp-demo', methods=['GET'])
+def gurobi_vrp_demo():
+    """Run the bundled small CVRP demo."""
+    service = get_gurobi_vrp_service()
+    result = service.solve(service.demo_payload())
+    return jsonify(result)
+
+
+@optimization_bp.route('/gurobi/network-design', methods=['POST'])
+def gurobi_network_design():
+    """
+    Solve a small capacitated network-design MILP.
+
+    Request Body:
+        {
+            "solver": "auto" | "gurobi" | "greedy",
+            "max_facilities": 2,
+            "customers": [{"id": "...", "demand": 120, "lat": 23.1, "lon": 113.2}],
+            "candidates": [{"id": "...", "capacity": 260, "fixed_cost": 46000, "lat": 23.1, "lon": 113.2}]
+        }
+    """
+    payload = request.get_json(silent=True) or {}
+    result = get_gurobi_network_design_service().solve(payload)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/gurobi/network-design-demo', methods=['GET'])
+def gurobi_network_design_demo():
+    """Run the bundled small network-design demo."""
+    service = get_gurobi_network_design_service()
+    result = service.solve(service.demo_payload())
+    return jsonify(result)
+
+
+@optimization_bp.route('/solver-benchmark', methods=['POST'])
+@optimization_bp.route('/gurobi/compare-small-vrp', methods=['POST'])
+def solver_benchmark():
+    """
+    Compare bounded CVRP solvers on one shared input.
+
+    Request Body:
+        {
+            "solvers": ["gurobi", "ortools", "alns", "greedy"],
+            "time_limit": 5,
+            "n_vehicles": 2,
+            "vehicle_capacity": 7,
+            "demands": [2, 3, 4, 2],
+            "distance_matrix": [[0, ...], ...]
+        }
+    """
+    payload = request.get_json(silent=True) or {}
+    result = get_solver_benchmark_service().compare_small_vrp(payload)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/solver-benchmark-demo', methods=['GET'])
+@optimization_bp.route('/gurobi/compare-small-vrp-demo', methods=['GET'])
+def solver_benchmark_demo():
+    """Run the bundled small CVRP solver benchmark demo."""
+    service = get_solver_benchmark_service()
+    result = service.compare_small_vrp(service.demo_payload())
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/route-sequence-benchmark', methods=['POST'])
+def route_sequence_benchmark():
+    """
+    Compare bounded route-sequence solvers over real nodes/routes.
+
+    Request Body:
+        {
+            "depot_id": 1,
+            "node_ids": [2, 3, 4],
+            "solvers": ["nearest_neighbor", "two_opt", "ortools", "gurobi"],
+            "return_to_depot": true,
+            "allow_haversine_fallback": true
+        }
+    """
+    payload = request.get_json(silent=True) or {}
+    result = get_route_sequence_benchmark_service().benchmark(payload)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@optimization_bp.route('/route-sequence-benchmark-demo', methods=['GET'])
+def route_sequence_benchmark_demo():
+    """Run the bundled real-node route-sequence benchmark demo."""
+    service = get_route_sequence_benchmark_service()
+    result = service.benchmark(service.demo_payload())
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
 
 
 @optimization_bp.route('/solve', methods=['POST'])

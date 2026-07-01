@@ -422,6 +422,7 @@ class DispatchOrchestrationService:
                 "total_duration": 0.0,
                 "total_cost": 0.0,
                 "route_sequence": [],
+                "route_legs": [],
             }
             for vehicle in vehicles
         }
@@ -463,6 +464,14 @@ class DispatchOrchestrationService:
             state["total_distance"] += distance_info["distance_km"]
             state["total_duration"] += distance_info["duration_min"]
             state["total_cost"] += distance_info["cost"]
+            state["route_legs"].append(
+                self._dispatch_route_leg(
+                    order,
+                    distance_info,
+                    distance_meta,
+                    sequence=len(state["route_legs"]),
+                )
+            )
             state["route_sequence"].extend([
                 {
                     "type": "pickup",
@@ -491,11 +500,17 @@ class DispatchOrchestrationService:
             vehicle = state["vehicle"]
             load_utilization = state["total_weight_kg"] / max(vehicle.capacity_weight_tons * 1000.0, 1.0)
             volume_utilization = state["total_volume_m3"] / max(vehicle.capacity_volume_m3, 1.0)
+            route_truth = self._plan_route_truth(
+                state["route_legs"],
+                data_source=self._infer_order_source(state["orders"]),
+            )
             plans.append({
                 "vehicle_id": vehicle.id,
                 "vehicle_info": vehicle.to_dict(),
                 "orders": [order.to_dict() for order in state["orders"]],
                 "route_sequence": state["route_sequence"],
+                "route_legs": state["route_legs"],
+                "route_truth": route_truth,
                 "total_distance": round(state["total_distance"], 2),
                 "total_duration": round(state["total_duration"], 2),
                 "total_cost": round(state["total_cost"], 2),
@@ -522,6 +537,7 @@ class DispatchOrchestrationService:
             "provider_status": distance_meta.get("provider_status", "ok"),
             "fallback_reason": distance_meta.get("fallback_reason"),
         })
+        summary["route_truth"] = self._dispatch_route_truth(plans)
         ai_shadow = self._ai_shadow_summary(orders, plans, unassigned)
         authenticity_level = self._authenticity_level(data_source, distance_meta)
         summary["authenticity_level"] = authenticity_level
@@ -541,6 +557,7 @@ class DispatchOrchestrationService:
             "distance_precision": distance_meta.get("precision", {}),
             "source_summary": distance_meta.get("source_summary", {}),
             "provider_status": distance_meta.get("provider_status", "ok"),
+            "route_truth": summary["route_truth"],
             "authenticity_level": authenticity_level,
             "fallback_reason": distance_meta.get("fallback_reason"),
             "legacy_truth_contract": self._legacy_truth_contract(data_source, distance_meta),
@@ -792,12 +809,6 @@ class DispatchOrchestrationService:
                     result = cache.get_distance(origin, destination, strategy=0, use_amap=True)
                     distance = round(float(result.get("distance_km", 0.0) or 0.0), 2)
                     duration = round(float(result.get("duration_minutes", 0.0) or 0.0), 2)
-                    lookup[order.ref] = {
-                        "distance_km": distance,
-                        "duration_min": duration,
-                        "cost": round(max(distance * DEFAULT_COST_PER_KM, order.freight or 0.0), 2),
-                        "source": result.get("source"),
-                    }
                     raw_source = result.get("source", "unknown")
                     is_exact = bool(result.get("is_exact", False))
                     # 规范化 source：get_distance 返回 'cache'，需用 is_exact 区分精确/近似
@@ -807,6 +818,16 @@ class DispatchOrchestrationService:
                         norm_source = "amap_route"
                     else:
                         norm_source = raw_source
+                    provider_status = self._leg_provider_status(norm_source)
+                    lookup[order.ref] = {
+                        "distance_km": distance,
+                        "duration_min": duration,
+                        "cost": round(max(distance * DEFAULT_COST_PER_KM, order.freight or 0.0), 2),
+                        "source": result.get("source"),
+                        "distance_source": norm_source,
+                        "provider_status": provider_status,
+                        "fallback_reason": None if provider_status == "ok" else f"{norm_source}_distance_estimate",
+                    }
                     source_counter[norm_source] += 1
                     if is_exact:
                         exact_count += 1
@@ -877,16 +898,23 @@ class DispatchOrchestrationService:
         if not order.has_coordinates:
             distance = 100.0
             source = "missing_coordinates_default"
+            provider_status = "degraded"
+            fallback_reason = "order_missing_coordinates"
         else:
             origin, destination = order.coordinate_pair()
             distance = self._haversine_km(origin, destination) * 1.3
             source = "haversine_corrected"
+            provider_status = "degraded"
+            fallback_reason = "precise_distance_disabled_or_provider_unavailable"
         duration = distance / DEFAULT_AVG_SPEED_KMH * 60.0
         return {
             "distance_km": round(distance, 2),
             "duration_min": round(duration, 2),
             "cost": round(max(distance * DEFAULT_COST_PER_KM, order.freight or 0.0), 2),
             "source": source,
+            "distance_source": source,
+            "provider_status": provider_status,
+            "fallback_reason": fallback_reason,
         }
 
     def _build_diagnostics(self, orders: List[DispatchOrder], vehicles: List[DispatchVehicle]) -> Dict[str, Any]:
@@ -973,6 +1001,7 @@ class DispatchOrchestrationService:
                     diagnostics_json=self._json_dumps({
                         "load_utilization": plan.get("load_utilization"),
                         "volume_utilization": plan.get("volume_utilization"),
+                        "route_truth": plan.get("route_truth"),
                     }),
                 )
                 db.session.add(assignment)
@@ -1357,6 +1386,185 @@ class DispatchOrchestrationService:
                 "后续可用已落库 dispatch_scenarios/assignments 训练动态重调度策略",
             ],
         }
+
+    def _dispatch_route_leg(
+        self,
+        order: DispatchOrder,
+        distance_info: Dict[str, Any],
+        distance_meta: Dict[str, Any],
+        sequence: int,
+    ) -> Dict[str, Any]:
+        distance_source = (
+            distance_info.get("distance_source")
+            or distance_info.get("source")
+            or distance_meta.get("distance_source")
+            or "unknown"
+        )
+        provider_status = distance_info.get("provider_status") or self._leg_provider_status(distance_source)
+        if provider_status == "unknown":
+            provider_status = distance_meta.get("provider_status", "unknown")
+
+        fallback_reason = distance_info.get("fallback_reason")
+        if not fallback_reason and provider_status != "ok":
+            fallback_reason = distance_meta.get("fallback_reason") or f"{distance_source}_distance_estimate"
+
+        return {
+            "sequence": sequence,
+            "order_ref": order.ref,
+            "order_number": order.order_number,
+            "from_name": order.origin_name,
+            "to_name": order.destination_name,
+            "from_lng": order.origin_lng,
+            "from_lat": order.origin_lat,
+            "to_lng": order.destination_lng,
+            "to_lat": order.destination_lat,
+            "distance_km": round(float(distance_info.get("distance_km") or 0.0), 2),
+            "duration_minutes": round(float(distance_info.get("duration_min") or 0.0), 2),
+            "cost": round(float(distance_info.get("cost") or 0.0), 2),
+            "data_source": order.data_source,
+            "distance_source": distance_source,
+            "duration_source": distance_source,
+            "path_source": "dispatch_order_origin_destination_leg",
+            "provider_status": provider_status,
+            "fallback_reason": fallback_reason,
+            "authenticity_level": self._route_truth_authenticity(
+                order.data_source,
+                {distance_source: 1},
+                {provider_status: 1},
+            ),
+        }
+
+    def _plan_route_truth(self, route_legs: Sequence[Dict[str, Any]], data_source: str) -> Dict[str, Any]:
+        distance_counts: Counter = Counter()
+        duration_counts: Counter = Counter()
+        status_counts: Counter = Counter()
+        fallback_counts: Counter = Counter()
+        estimated_leg_count = 0
+
+        for leg in route_legs:
+            distance_source = leg.get("distance_source") or "unknown"
+            duration_source = leg.get("duration_source") or distance_source
+            provider_status = leg.get("provider_status") or self._leg_provider_status(distance_source)
+            distance_counts[str(distance_source)] += 1
+            duration_counts[str(duration_source)] += 1
+            status_counts[str(provider_status)] += 1
+            if provider_status != "ok" or not self._is_exact_leg_source(distance_source):
+                estimated_leg_count += 1
+            if leg.get("fallback_reason"):
+                fallback_counts[str(leg["fallback_reason"])] += 1
+
+        return {
+            "path_source": "dispatch_assignment_sequence",
+            "leg_type": "order_origin_destination",
+            "leg_count": len(route_legs),
+            "assignment_leg_count": len(route_legs),
+            "estimated_leg_count": estimated_leg_count,
+            "distance_source_counts": dict(distance_counts),
+            "duration_source_counts": dict(duration_counts),
+            "provider_status_counts": dict(status_counts),
+            "fallback_reason_counts": dict(fallback_counts),
+            "authenticity_level": self._route_truth_authenticity(
+                data_source,
+                dict(distance_counts),
+                dict(status_counts),
+            ),
+            "note": "Dispatch route legs explain each order origin-to-destination assignment distance; they are not road-navigation polylines.",
+        }
+
+    def _dispatch_route_truth(self, plans: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        distance_counts: Counter = Counter()
+        duration_counts: Counter = Counter()
+        status_counts: Counter = Counter()
+        fallback_counts: Counter = Counter()
+        total_legs = 0
+        estimated_legs = 0
+        data_sources: Counter = Counter()
+
+        for plan in plans:
+            truth = plan.get("route_truth") or {}
+            total_legs += int(truth.get("leg_count") or 0)
+            estimated_legs += int(truth.get("estimated_leg_count") or 0)
+            self._merge_counts(distance_counts, truth.get("distance_source_counts") or {})
+            self._merge_counts(duration_counts, truth.get("duration_source_counts") or {})
+            self._merge_counts(status_counts, truth.get("provider_status_counts") or {})
+            self._merge_counts(fallback_counts, truth.get("fallback_reason_counts") or {})
+            for order in plan.get("orders") or []:
+                data_sources[str(order.get("data_source") or "unknown")] += 1
+
+        primary_data_source = data_sources.most_common(1)[0][0] if data_sources else "unknown"
+        return {
+            "path_source": "dispatch_assignment_sequence",
+            "leg_type": "order_origin_destination",
+            "leg_count": total_legs,
+            "assignment_leg_count": total_legs,
+            "estimated_leg_count": estimated_legs,
+            "distance_source_counts": dict(distance_counts),
+            "duration_source_counts": dict(duration_counts),
+            "provider_status_counts": dict(status_counts),
+            "fallback_reason_counts": dict(fallback_counts),
+            "authenticity_level": self._route_truth_authenticity(
+                primary_data_source,
+                dict(distance_counts),
+                dict(status_counts),
+            ),
+            "note": "Dispatch assignment sequence is a planning trace, not a provider road polyline.",
+        }
+
+    @staticmethod
+    def _merge_counts(target: Counter, source: Dict[str, Any]) -> None:
+        for key, value in source.items():
+            try:
+                target[str(key)] += int(value)
+            except (TypeError, ValueError):
+                continue
+
+    @staticmethod
+    def _is_exact_leg_source(distance_source: Any) -> bool:
+        return str(distance_source or "") in {
+            "amap_route",
+            "amap_driving_route",
+            "tianditu_route",
+            "cache_exact",
+            "distance_cache_exact",
+        }
+
+    @classmethod
+    def _leg_provider_status(cls, distance_source: Any) -> str:
+        source = str(distance_source or "unknown")
+        if cls._is_exact_leg_source(source):
+            return "ok"
+        if source in {
+            "cache_approx",
+            "distance_cache_approx",
+            "mixed_distance_provider",
+            "precise_distance_provider",
+        }:
+            return "partial"
+        if source in {
+            "haversine_corrected",
+            "missing_coordinates_default",
+            "route_graph_unreachable",
+            "route_segment_missing",
+        }:
+            return "degraded"
+        return "unknown"
+
+    @classmethod
+    def _route_truth_authenticity(
+        cls,
+        data_source: str,
+        distance_counts: Dict[str, Any],
+        status_counts: Dict[str, Any],
+    ) -> str:
+        if not distance_counts:
+            return "C"
+        statuses = {str(key) for key, value in status_counts.items() if value}
+        all_exact = all(cls._is_exact_leg_source(source) for source in distance_counts)
+        if data_source == "shipment_fact" and statuses <= {"ok"} and all_exact:
+            return "B"
+        if data_source == "shipment_fact":
+            return "B-"
+        return "C"
 
     @staticmethod
     def _authenticity_level(data_source: str, distance_meta: Dict[str, Any]) -> str:
