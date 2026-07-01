@@ -5,9 +5,15 @@
 
 ---
 
-## 🛠️ 当前任务（2026-06）
+## 🛠️ 当前任务（2026-07）
 
 ### ✅ 已完成
+- [x] **2026-07-01 codex 未提交工作固化 + Next 壳风格统一**（C哥）
+  - 接手 codex 117 文件未提交工作区，验证 68 测试 + build 全绿
+  - frontend-next 浅色商务风 → **深色科幻指挥中心大屏**（对齐 Vue command-center-theme）
+  - 4 commit 固化：`f467bf3` 后端 / `a849852` Next 壳 / `6237c95` Vue+配置 / `d440a32` AGENTS+记忆
+  - AGENTS.md 协作指南 + .codex 记忆系统建立
+  - 详见 `.shared-memory/daily/2026-07-01.md`
 - [x] **2026-06-19 文档对齐 PostgreSQL**（C哥）
   - `backend/.env.example` 补 `POSTGRES_DATABASE_URL` + Redis + `DISABLE_ML_ROUTES`
   - `.env.production.example` 加"分项变量 → compose 拼接 → Flask"双轨机制注释
@@ -17,10 +23,11 @@
   - 更新 `TASKS.md` / `MEMORIES.md`，写今日 daily 日志
 
 ### ⏳ 进行中 / 待办
-- [ ] **`CODE_REVIEW_REPORT.md` 三个低优尾巴**：信息素持久化、自适应冷却、配置化成本
-- [ ] **`scripts/_tmp_dispatch_smoke.py`** 为 untracked 临时脚本，待清理或纳入正式测试
+- [ ] **部署线上**：4 个新 commit（`f467bf3`/`a849852`/`6237c95`/`d440a32`）推线上，待小宇确认
+- [ ] **frontend-next 生产部署评估**：Next 壳目前仅本地 5174，需评估是否纳入 `docker-compose.prod.yml` 或独立部署
+- [ ] **CODE_REVIEW 剩余 2 低优**：信息素持久化（ACO）、自适应冷却（SA）
+- [ ] **Node/Route 坐标审查**：21 节点 / 306 路线（已有 `node_route_audit_service`，待人工复核真实性）
 - [ ] **线上 dispatch 链路烟雾测试**（需联网 + admin 凭据，待小宇确认）
-- [ ] **`backend/config.py` 第 33/81 行重复 replace 清理**（顺手活）
 
 ---
 
