@@ -13,6 +13,23 @@
 
 ---
 
+## 2026-07-05 稳定展示版 / Stable Demo Release
+
+本次稳定展示版面向课程汇报和企业演示，重点强化了食品供应链仓配优化案例、真实 GIS 路径可信度、调度回放动画和可解释决策面板。
+
+This stable demo release is designed for classroom and enterprise presentations. It highlights the peach fresh-food supply-chain case, GIS-backed route truth metadata, dispatch replay animation, and explainable decision controls.
+
+- 食品案例入口：`/cases/food-supply`
+- 调度展示入口：`/cases/food-supply/dispatch`
+- 真实数据底座：PostgreSQL/PostGIS，`shipment_facts=50000`
+- 关键展示能力：AMap JS 地图、A 级高德 route polyline、OR-Tools VRPTW、PSO/Greedy/OR-Tools 方案对比、成本/鲜度/时效/碳排权重即时重评分
+- AI/RL 边界：DQN/PPO/Fitted-Q 仍为 shadow/rerank，不直接写业务状态；硬约束由 solver 保底
+- 真相契约：所有路径/调度/案例接口持续返回 `distance_source`、`path_source`、`authenticity_level`、`fallback_reason`
+
+发布验证记录见：[2026-07-05 稳定展示版发布记录](docs/STABLE_DEMO_RELEASE_2026-07-05.md)
+
+---
+
 ## 2026 最新指挥中枢版本
 
 当前主线已经升级为企业级“物流指挥中枢 / Logistics Command Center”界面，默认首屏为深色指挥舱：

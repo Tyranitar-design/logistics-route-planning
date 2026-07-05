@@ -130,6 +130,28 @@ def test_shipment_cost_analytics_uses_real_freight_and_service_kpis(monkeypatch)
     assert result["truth_contract"]["business_mutation"] == "none"
 
 
+def test_shipment_cost_analytics_streams_column_projections(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from sqlalchemy.orm import Query
+
+        from app.services.shipment_cost_analytics_service import ShipmentCostAnalyticsService
+
+        def fail_all(self):
+            raise AssertionError("operations summary must not load full ORM result sets with Query.all()")
+
+        monkeypatch.setattr(Query, "all", fail_all)
+
+        result = ShipmentCostAnalyticsService().operations_summary(
+            {"limit": 100, "trend_days": 7, "lane_limit": 5}
+        )
+
+    assert result["success"] is True
+    assert result["summary"]["records_scanned"] == 12
+    assert result["kpis"]["total_freight"] == 1860
+
+
 def test_operations_scorecard_aggregates_cost_and_service_readiness(monkeypatch):
     app = _build_app(monkeypatch)
 

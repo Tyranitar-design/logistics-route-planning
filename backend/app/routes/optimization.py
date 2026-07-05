@@ -20,6 +20,7 @@ from app.services.gurobi_capability_service import get_gurobi_capability_service
 from app.services.gurobi_assignment_service import get_gurobi_assignment_service
 from app.services.gurobi_vrp_service import get_gurobi_vrp_service
 from app.services.gurobi_network_design_service import get_gurobi_network_design_service
+from app.services.optional_capability_service import get_optional_capability_service
 from app.services.solver_benchmark_service import get_solver_benchmark_service
 from app.services.route_sequence_benchmark_service import get_route_sequence_benchmark_service
 from app.services.optimization_engine import (
@@ -46,6 +47,85 @@ def _bool_query_arg(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _int_query_arg(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
+def _project_geo_points(points):
+    lons = [float(item["lon"]) for item in points if item.get("lon") is not None]
+    lats = [float(item["lat"]) for item in points if item.get("lat") is not None]
+    if not lons or not lats:
+        return [[50.0, 50.0] for _ in points]
+
+    min_lon, max_lon = min(lons), max(lons)
+    min_lat, max_lat = min(lats), max(lats)
+    lon_span = max(max_lon - min_lon, 1e-6)
+    lat_span = max(max_lat - min_lat, 1e-6)
+
+    projected = []
+    for item in points:
+        lon = float(item.get("lon") or min_lon)
+        lat = float(item.get("lat") or min_lat)
+        x = 8.0 + ((lon - min_lon) / lon_span) * 84.0
+        y = 8.0 + ((lat - min_lat) / lat_span) * 84.0
+        projected.append([round(x, 4), round(y, 4)])
+    return projected
+
+
+def _build_real_shipment_vrp_sample() -> Dict[str, Any]:
+    customer_limit = _int_query_arg("customer_limit", 12, 3, 12)
+    candidate_limit = _int_query_arg("candidate_limit", 4, 1, 8)
+    dataset = get_gurobi_network_design_service().database_dataset_payload(
+        {
+            "customer_limit": customer_limit,
+            "candidate_limit": candidate_limit,
+        }
+    )
+
+    geo_customers = dataset.get("customers") or []
+    geo_candidates = dataset.get("candidates") or []
+    depot_geo = geo_candidates[0] if geo_candidates else {"name": "虚拟中心仓", "lat": 35.0, "lon": 110.0}
+    projected = _project_geo_points([depot_geo, *geo_customers])
+    depot = projected[0]
+    customers = projected[1:]
+    demands = [max(1.0, round(float(item.get("demand") or 1.0), 4)) for item in geo_customers]
+    total_demand = sum(demands)
+    capacity = round(max(max(demands or [1.0]) * 1.25, total_demand / 3.0 if total_demand else 50.0), 4)
+
+    return {
+        "success": True,
+        "customers": customers,
+        "demands": demands,
+        "depot": depot,
+        "capacity": capacity,
+        "n_customers": len(customers),
+        "geo_customers": geo_customers,
+        "geo_depot": depot_geo,
+        "geo_candidates": geo_candidates,
+        "data_source": dataset.get("data_source"),
+        "distance_source": "projected_coordinate_plane",
+        "path_source": "shipment_fact_city_od_projection",
+        "authenticity_level": "C" if dataset.get("data_source") == "shipment_fact_od_aggregate" else "D",
+        "fallback_reason": dataset.get("fallback_reason"),
+        "source_summary": (
+            f"基于 shipment_facts 聚合 {len(geo_customers)} 个目的城市与 "
+            f"{len(geo_candidates)} 个始发城市，并投影到 0-100 平面供 VRP 求解器对比。"
+        ),
+        "summary": dataset.get("summary", {}),
+        "authenticity": {
+            "level": "C" if dataset.get("data_source") == "shipment_fact_od_aggregate" else "D",
+            "distance_source": "projected_coordinate_plane",
+            "path_source": "shipment_fact_city_od_projection",
+            "fallback_reason": dataset.get("fallback_reason"),
+            "message": "真实运单城市聚合样本；路线图为求解器平面投影，不是高德导航路径。",
+        },
+    }
 
 
 def _build_vrp_data_from_request(data: Dict[str, Any]) -> VRPData:
@@ -136,7 +216,21 @@ def list_solvers():
             })
         solvers.append(item)
     
-    return jsonify({"solvers": solvers})
+    capability_status = get_optional_capability_service().check(run_smoke=False)
+
+    return jsonify({
+        "solvers": solvers,
+        "capability_summary": capability_status["summary"],
+        "capabilities": capability_status["capabilities"],
+    })
+
+
+@optimization_bp.route('/capabilities', methods=['GET'])
+@optimization_bp.route('/capability-health', methods=['GET'])
+def optimization_capabilities():
+    """Return safe optional optimization/AI/RL/geospatial capability status."""
+    run_smoke = _bool_query_arg("smoke", False)
+    return jsonify(get_optional_capability_service().check(run_smoke=run_smoke))
 
 
 @optimization_bp.route('/gurobi/health', methods=['GET'])
@@ -651,5 +745,32 @@ def get_demo_data():
         "demands": demands.tolist(),
         "depot": depot.tolist(),
         "capacity": 50,
-        "n_customers": n_customers
+        "n_customers": n_customers,
+        "data_source": "random_demo",
+        "distance_source": "synthetic_euclidean_plane",
+        "path_source": "synthetic_preview",
+        "authenticity_level": "D",
+        "fallback_reason": "generated_demo_data",
+        "authenticity": {
+            "level": "D",
+            "distance_source": "synthetic_euclidean_plane",
+            "path_source": "synthetic_preview",
+            "fallback_reason": "generated_demo_data",
+            "message": "随机演示数据，仅用于算法功能兜底验证。",
+        },
     })
+
+
+@optimization_bp.route('/real-shipment-demo', methods=['GET'])
+@optimization_bp.route('/real-vrp-demo', methods=['GET'])
+def get_real_shipment_demo_data():
+    """Return a bounded VRP sample derived from real shipment_facts city aggregates."""
+    try:
+        return jsonify(_build_real_shipment_vrp_sample())
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "provider_status": "degraded",
+            "fallback_reason": f"REAL_SHIPMENT_SAMPLE_FAILED:{exc.__class__.__name__}",
+        }), 500

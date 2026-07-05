@@ -22,10 +22,10 @@
           <div class="status-bar">
             <div class="status-item" :class="modelTrained ? 'trained' : 'untrained'">
               <span class="status-dot"></span>
-              <span>{{ modelTrained ? 'LSTM/Prophet 已训练' : '模型未训练' }}</span>
+              <span>{{ modelStatusText }}</span>
             </div>
             <el-button type="primary" size="small" @click="handleTrainModels" :loading="training">
-              <el-icon><Cpu /></el-icon> 训练模型
+              <el-icon><Cpu /></el-icon> 创建训练任务
             </el-button>
           </div>
 
@@ -39,6 +39,14 @@
             <el-button type="success" size="small" @click="loadPredictions" :loading="loadingPred">
               🔮 开始预测
             </el-button>
+          </div>
+
+          <div class="truth-strip" :class="forecastMeta.provider_status || 'degraded'">
+            <span>数据源 {{ forecastMeta.data_source || 'shipment_fact' }}</span>
+            <span>状态 {{ forecastMeta.forecast_status || '待加载' }}</span>
+            <span>粒度 {{ forecastMeta.time_granularity || 'auto' }}</span>
+            <span v-if="forecastMeta.fallback_reason">降级 {{ forecastMeta.fallback_reason }}</span>
+            <span v-else>在线预测为真实时间序列 baseline，深度模型保持 shadow/readiness</span>
           </div>
 
           <!-- 预测结果图表 -->
@@ -379,6 +387,14 @@ const activeTab = ref('prediction')
 const training = ref(false)
 const loadingPred = ref(false)
 const modelTrained = ref(false)
+const modelStatusText = ref('真实 baseline 就绪，深度模型 shadow 待训练')
+const forecastMeta = ref({
+  data_source: 'shipment_fact',
+  provider_status: 'degraded',
+  forecast_status: '待加载',
+  fallback_reason: null,
+  time_granularity: 'auto'
+})
 const predictionDays = ref(7)
 const predictions = ref([])
 const anomalies = ref([])
@@ -446,10 +462,11 @@ const handleTrainModels = async () => {
   try {
     const res = await trainAdvancedModels(180)
     if (res.success) {
-      modelTrained.value = true
+      modelTrained.value = res.provider_status === 'accepted' || Boolean(res.job_id)
+      modelStatusText.value = `${res.model_family || 'LSTM'} shadow 任务已创建`
       ElNotification({
-        title: '🎉 模型训练完成',
-        message: `LSTM + Prophet 模型已训练，使用 ${res.stats?.total_records} 条数据`,
+        title: '训练任务已创建',
+        message: `任务 ${res.job_id || res.job?.job_id || '-'} 已进入后台 shadow 训练，不阻塞页面`,
         type: 'success'
       })
     }
@@ -465,41 +482,48 @@ const loadPredictions = async () => {
   try {
     const res = await getPredictionWithAnomaly(predictionDays.value)
     if (res.success) {
-      predictions.value = res.data?.prediction?.predictions || []
+      const prediction = res.data?.prediction || {}
+      predictions.value = prediction.predictions || []
       anomalies.value = res.data?.alerts || []
-      initPredictionCharts(res.data?.prediction)
+      forecastMeta.value = {
+        data_source: prediction.data_source || res.data_source || 'shipment_fact',
+        provider_status: prediction.provider_status || res.provider_status,
+        forecast_status: prediction.forecast_status,
+        fallback_reason: prediction.fallback_reason || res.fallback_reason,
+        time_granularity: prediction.time_granularity || prediction.series_summary?.grain || 'auto'
+      }
+      initPredictionCharts(prediction)
     }
   } catch (e) {
-    // 模拟数据
-    loadMockPredictions()
+    predictions.value = []
+    anomalies.value = [
+      { level: 'warning', message: '预测接口暂不可用，请检查 /api/advanced-ml 兼容层或后端日志。' }
+    ]
+    forecastMeta.value = {
+      data_source: 'shipment_fact',
+      provider_status: 'degraded',
+      forecast_status: '接口失败',
+      fallback_reason: e?.response?.data?.fallback_reason || e.message,
+      time_granularity: 'auto'
+    }
+    initPredictionCharts({ predictions: [] })
   } finally {
     loadingPred.value = false
   }
-}
-
-const loadMockPredictions = () => {
-  predictions.value = Array.from({ length: predictionDays.value }, (_, i) => ({
-    value: 200 + Math.random() * 100 + i * 5,
-    lower: 180 + Math.random() * 50,
-    upper: 250 + Math.random() * 80
-  }))
-  anomalies.value = [
-    { level: 'info', message: '预测显示需求将增长，建议提前调度车辆' }
-  ]
-  initPredictionCharts({ predictions: predictions.value })
 }
 
 const initPredictionCharts = (data) => {
   // 趋势图
   const chart1 = initChart(predictionChart.value)
   if (chart1 && data?.predictions) {
+    const rows = data.predictions || []
     chart1.setOption({
       backgroundColor: 'transparent',
       tooltip: { trigger: 'axis' },
       grid: { left: '5%', right: '5%', bottom: '10%', top: '10%', containLabel: true },
       xAxis: {
         type: 'category',
-        data: data.predictions.map((_, i) => `Day ${i + 1}`),
+        data: rows.map((p, i) => (p.date || p.bucket_start || `T+${i + 1}`).slice(5, 16)),
         axisLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.3)' } },
         axisLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 10 }
       },
@@ -512,7 +536,7 @@ const initPredictionCharts = (data) => {
         {
           name: '预测值',
           type: 'line',
-          data: data.predictions.map(p => p.value || p),
+          data: rows.map(p => p.value || p.predicted_orders || 0),
           smooth: true,
           lineStyle: { color: '#00ff88', width: 3 },
           areaStyle: {
@@ -536,8 +560,9 @@ const initPredictionCharts = (data) => {
         type: 'pie',
         radius: ['40%', '70%'],
         data: [
-          { name: 'LSTM', value: 40, itemStyle: { color: '#00d4ff' } },
-          { name: 'Prophet', value: 60, itemStyle: { color: '#00ff88' } }
+          { name: '真实Baseline', value: 65, itemStyle: { color: '#00ff88' } },
+          { name: 'Deep Shadow', value: 20, itemStyle: { color: '#a855f7' } },
+          { name: '兼容入口', value: 15, itemStyle: { color: '#00d4ff' } }
         ],
         label: { color: '#fff', fontSize: 11 }
       }]
@@ -555,10 +580,10 @@ const calculatePricing = async () => {
       loadPriceForecast()
     }
   } catch (e) {
-    // 模拟
+    const basePrice = pricingParams.value.distance * 2
     priceResult.value = {
-      base_price: pricingParams.value.distance * 2,
-      final_price: pricingParams.value.distance * 2.5,
+      base_price: basePrice,
+      final_price: basePrice * 1.25,
       multiplier: 1.25,
       price_components: {
         time_adjustment: 15,
@@ -566,7 +591,9 @@ const calculatePricing = async () => {
         urgency_adjustment: pricingParams.value.urgency === 'urgent' ? 50 : 0,
         weight_discount: -5
       },
-      suggestions: ['当前定价合理，建议下单']
+      suggestions: ['动态定价接口暂不可用，当前为本地确定性估算，请以真实费率服务为准'],
+      provider_status: 'degraded',
+      fallback_reason: e?.response?.data?.error || e.message
     }
     initPriceForecastChart()
   } finally {
@@ -589,9 +616,11 @@ const initPriceForecastChart = (forecasts) => {
   const chart = initChart(priceForecastChart.value)
   if (!chart) return
 
+  const basePrice = pricingParams.value.distance * 2.2
   const data = forecasts || Array.from({ length: 24 }, (_, i) => ({
     hour: i,
-    price: 100 + Math.sin(i / 4) * 20 + Math.random() * 10
+    price: Math.max(0, Math.round((basePrice + Math.sin(i / 4) * basePrice * 0.08) * 100) / 100),
+    source: 'deterministic_local_estimate'
   }))
 
   chart.setOption({
@@ -776,6 +805,9 @@ onMounted(async () => {
   try {
     const status = await getAdvancedMLStatus()
     modelTrained.value = status.is_trained
+    modelStatusText.value = status.is_trained
+      ? `已缓存 ${status.models?.length || 0} 个 shadow/轻量模型`
+      : '真实 baseline 就绪，深度模型 shadow 待训练'
   } catch (e) {}
 
   // 加载运输方式
@@ -895,6 +927,36 @@ onUnmounted(() => {
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  background: rgba(0, 212, 255, 0.06);
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 11px;
+}
+
+.truth-strip.ok {
+  border-color: rgba(0, 255, 136, 0.25);
+  background: rgba(0, 255, 136, 0.07);
+}
+
+.truth-strip.degraded {
+  border-color: rgba(255, 217, 61, 0.25);
+  background: rgba(255, 217, 61, 0.06);
+}
+
+.truth-strip span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
 }
 
 /* Charts */

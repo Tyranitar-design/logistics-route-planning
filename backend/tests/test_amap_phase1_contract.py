@@ -137,10 +137,28 @@ def test_amap_provider_health_reports_key_status_without_secret(monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["success"] is True
+    assert payload["provider_status"] == "ok"
+    assert payload["fallback_reason"] is None
     assert payload["keys"]["effective_key_configured"] is True
     assert secret_value not in str(payload)
     assert payload["probed"] is False
     assert payload["components"] == {}
+
+
+def test_amap_provider_health_explains_missing_key(monkeypatch):
+    for name in ["AMAP_SERVICE_KEY", "AMAP_WEB_KEY", "AMAP_KEY", "GAODE_MAP_KEY", "GAODE_MAP_FRONTEND_KEY"]:
+        monkeypatch.delenv(name, raising=False)
+    client, headers = _build_client(monkeypatch)
+
+    response = client.get("/api/amap/provider-health", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["provider_status"] == "degraded"
+    assert payload["degraded"] is True
+    assert payload["fallback_reason"] == "AMAP_KEY_MISSING"
+    assert payload["keys"]["effective_key_configured"] is False
 
 
 def test_traffic_analyze_degrades_without_breaking_route_panel(monkeypatch):

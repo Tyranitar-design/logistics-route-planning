@@ -11,6 +11,10 @@
       <span class="subtitle">DATA ANALYTICS CENTER</span>
     </div>
 
+    <div class="truth-strip" :class="enterpriseSummary.provider_status || 'degraded'">
+      <span v-for="item in truthItems" :key="item">{{ item }}</span>
+    </div>
+
     <!-- 功能标签页 -->
     <el-tabs v-model="activeTab" class="analytics-tabs">
       
@@ -76,7 +80,7 @@
               </div>
             </div>
             <div class="bottleneck-warning" v-if="dashboard.supply_chain?.bottleneck_nodes?.length">
-              ⚠️ 瓶颈: {{ dashboard.supply_chain.bottleneck_nodes.join(', ') }}
+              瓶颈: {{ dashboard.supply_chain.bottleneck_nodes.join(', ') }}
             </div>
           </div>
 
@@ -308,19 +312,22 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { getEnterpriseSummary } from '@/api/analytics'
+import { calculateCarbon } from '@/api/dataAnalytics'
 import {
-  getAnalyticsDashboard,
-  getPredictiveMaintenance,
-  getCustomerProfiles,
-  getSupplyChain,
-  getCarbonFootprint,
-  calculateCarbon
-} from '@/api/dataAnalytics'
+  buildDataAnalyticsModel,
+  emptyEnterpriseSummary,
+  enterpriseTruthItems,
+  normalizeEnterpriseSummary,
+  round
+} from '@/utils/enterpriseSummary'
 
 // Tab 状态
 const activeTab = ref('dashboard')
+const enterpriseSummary = ref(emptyEnterpriseSummary())
+const truthItems = computed(() => enterpriseTruthItems(enterpriseSummary.value))
 
 // 仪表盘数据
 const dashboard = ref({
@@ -356,21 +363,36 @@ const carbonParams = ref({
 const carbonResult = ref(null)
 const carbonReport = ref({ summary: {} })
 
-// 加载仪表盘
-const loadDashboard = async () => {
+const applyEnterpriseModel = (summary) => {
+  enterpriseSummary.value = normalizeEnterpriseSummary(summary)
+  const model = buildDataAnalyticsModel(enterpriseSummary.value)
+  dashboard.value = model.dashboard
+  trafficPredictions.value = model.trafficPredictions
+  customerData.value = model.customerData
+  supplyChainData.value = model.supplyChainData
+  carbonReport.value = model.carbonReport
+}
+
+// 加载真实 shipment_facts 企业分析摘要
+const loadEnterpriseAnalytics = async () => {
   try {
-    const res = await getAnalyticsDashboard()
-    if (res.success) {
-      dashboard.value = res.dashboard
-    }
+    const res = await getEnterpriseSummary({
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 12,
+      anomaly_limit: 20
+    })
+    applyEnterpriseModel(res)
+    return res
   } catch (e) {
-    // 使用模拟数据
-    dashboard.value = {
-      predictive_maintenance: { high_risk_count: 2, predictions: [] },
-      customer_analysis: { high_value_count: 5, total_customers: 50, avg_satisfaction: 0.85 },
-      supply_chain: { fulfillment_rate: 92, on_time_delivery: 0.88, bottleneck_nodes: ['北京仓库'] },
-      carbon_footprint: { total_emission_kg: 1250, potential_saving_kg: 350 }
+    const degraded = {
+      ...emptyEnterpriseSummary(),
+      fallback_reason: e?.response?.data?.fallback_reason || e.message || 'ENTERPRISE_SUMMARY_FAILED'
     }
+    applyEnterpriseModel(degraded)
+    ElMessage.warning('真实数据摘要暂不可用，页面已显示空状态和降级原因')
+    return degraded
   }
 }
 
@@ -378,16 +400,9 @@ const loadDashboard = async () => {
 const loadPredictiveData = async () => {
   loadingPredictive.value = true
   try {
-    const res = await getPredictiveMaintenance()
-    if (res.success) {
-      trafficPredictions.value = res.data.traffic_predictions
-    }
+    await loadEnterpriseAnalytics()
   } catch (e) {
-    trafficPredictions.value = [
-      { route_id: 1, route_name: '北京-上海', current_status: 'moderate', congestion_probability: 0.45, recommendation: '路况一般，建议预留额外时间' },
-      { route_id: 2, route_name: '上海-广州', current_status: 'heavy', congestion_probability: 0.72, recommendation: '建议避开该路段' },
-      { route_id: 3, route_name: '广州-深圳', current_status: 'light', congestion_probability: 0.18, recommendation: '路况良好，适合通行' }
-    ]
+    trafficPredictions.value = []
   } finally {
     loadingPredictive.value = false
   }
@@ -395,56 +410,17 @@ const loadPredictiveData = async () => {
 
 // 加载客户数据
 const loadCustomerData = async () => {
-  try {
-    const res = await getCustomerProfiles()
-    if (res.success) {
-      customerData.value = res.data
-    }
-  } catch (e) {
-    customerData.value = {
-      profiles: [
-        { customer_id: 1, customer_name: '客户A', value_level: 'high', total_orders: 25, total_revenue: 15000, satisfaction_score: 0.92 },
-        { customer_id: 2, customer_name: '客户B', value_level: 'medium', total_orders: 12, total_revenue: 6500, satisfaction_score: 0.78 }
-      ],
-      value_distribution: { high: 5, medium: 15, low: 30 },
-      summary: { total_customers: 50, high_value_count: 5, avg_satisfaction: 0.82 }
-    }
-  }
+  await loadEnterpriseAnalytics()
 }
 
 // 加载供应链数据
 const loadSupplyChainData = async () => {
-  try {
-    const res = await getSupplyChain()
-    if (res.success) {
-      supplyChainData.value = res.data
-    }
-  } catch (e) {
-    supplyChainData.value = {
-      chain: {
-        nodes: [
-          { id: 1, name: '北京仓库', type: 'warehouse', status: 'active', performance: 0.92 },
-          { id: 2, name: '上海仓库', type: 'warehouse', status: 'active', performance: 0.88 },
-          { id: 3, name: '广州配送站', type: 'distribution', status: 'active', performance: 0.95 }
-        ]
-      },
-      metrics: { fulfillment_rate: 92, on_time_delivery: 0.88, avg_lead_time: 2.5, total_nodes: 5 }
-    }
-  }
+  await loadEnterpriseAnalytics()
 }
 
 // 加载碳足迹
 const loadCarbonReport = async () => {
-  try {
-    const res = await getCarbonFootprint()
-    if (res.success) {
-      carbonReport.value = res.data
-    }
-  } catch (e) {
-    carbonReport.value = {
-      summary: { total_emission_kg: 1250, potential_saving_kg: 350, avg_emission_per_order: 25 }
-    }
-  }
+  await loadEnterpriseAnalytics()
 }
 
 // 计算碳足迹
@@ -455,13 +431,14 @@ const calculateCarbonFootprint = async () => {
       carbonResult.value = res.footprint
     }
   } catch (e) {
-    // 模拟计算
-    const emission = carbonParams.value.distance * 0.12 * 
+    const emission = carbonParams.value.distance * 0.12 *
       { small: 0.7, medium: 1.0, large: 1.3, heavy: 1.8 }[carbonParams.value.vehicle_type]
     carbonResult.value = {
-      co2_emission_kg: Math.round(emission * 100) / 100,
+      co2_emission_kg: round(emission, 2),
       emission_per_km: 0.12,
-      green_alternative: { fuel_type: 'electric', saving_percent: 58 }
+      green_alternative: { fuel_type: 'electric', saving_percent: 58 },
+      source: 'deterministic_estimate',
+      fallback_reason: e?.response?.data?.error || e.message
     }
   }
 }
@@ -493,11 +470,7 @@ const getFuelName = (type) => {
 }
 
 onMounted(async () => {
-  await loadDashboard()
-  await loadPredictiveData()
-  await loadCustomerData()
-  await loadSupplyChainData()
-  await loadCarbonReport()
+  await loadEnterpriseAnalytics()
   await calculateCarbonFootprint()
 })
 </script>
@@ -553,6 +526,29 @@ onMounted(async () => {
   background: rgba(0, 212, 255, 0.05);
   border-radius: 12px;
   padding: 12px;
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.truth-strip span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  background: rgba(0, 212, 255, 0.08);
+  color: rgba(255,255,255,0.82);
+  font-size: 12px;
+}
+
+.truth-strip.degraded span {
+  border-color: rgba(255, 217, 61, 0.24);
+  background: rgba(255, 217, 61, 0.08);
 }
 
 :deep(.el-tabs__item.is-active) {

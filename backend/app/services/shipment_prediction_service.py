@@ -11,15 +11,17 @@ from __future__ import annotations
 import hashlib
 import math
 import statistics
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from uuid import uuid4
 
 import numpy as np
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
-from app.models import ShipmentFact, Vehicle
+from app.models import ShipmentFact, Vehicle, db
 
 
 DEFAULT_TASKS = ("demand", "eta", "delay", "cost")
@@ -41,11 +43,24 @@ class PredictionRecord:
     payload: Dict[str, Any]
 
 
+@dataclass
+class PredictionSeries:
+    task: str
+    grain: str
+    source_field: str
+    rows: List[Tuple[Any, float]]
+    status: str
+    fallback_reason: Optional[str]
+    summary: Dict[str, Any]
+
+
 class ShipmentPredictionService:
     """Build real-data prediction datasets and baseline evaluation reports."""
 
     def __init__(self) -> None:
         self._trained_models: Dict[str, Dict[str, Any]] = {}
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._job_lock = threading.Lock()
 
     def dataset_health(self) -> Dict[str, Any]:
         total = ShipmentFact.query.count()
@@ -85,17 +100,106 @@ class ShipmentPredictionService:
             "truth_contract": self._truth_contract(),
         }
 
+    def timeline_audit(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Audit shipment time fields before selecting a forecasting grain."""
+        payload = payload or {}
+        city = self._clean_text(payload.get("city") or payload.get("destination_city"))
+        sequence_length = max(1, min(168, self._coerce_int(payload.get("sequence_length"), 14)))
+        fields = {
+            "shipped_at": ShipmentFact.shipped_at,
+            "eta_at": ShipmentFact.eta_at,
+            "delivered_at": ShipmentFact.delivered_at,
+            "signed_at": ShipmentFact.signed_at,
+            "created_at": ShipmentFact.created_at,
+        }
+
+        field_summaries: Dict[str, Any] = {}
+        for name, column in fields.items():
+            field_summaries[name] = self._timeline_field_summary(column, name=name, city=city)
+
+        shipped = field_summaries.get("shipped_at", {})
+        recommended_grain = "daily"
+        if shipped.get("distinct_dates", 0) < MIN_EVALUATION_ROWS and shipped.get("distinct_hours", 0) >= MIN_EVALUATION_ROWS:
+            recommended_grain = "hourly"
+
+        best_field = "shipped_at"
+        if shipped.get("distinct_dates", 0) < MIN_EVALUATION_ROWS and shipped.get("distinct_hours", 0) < MIN_EVALUATION_ROWS:
+            ranked = sorted(
+                field_summaries.items(),
+                key=lambda item: (item[1].get("distinct_dates", 0), item[1].get("distinct_hours", 0)),
+                reverse=True,
+            )
+            best_field = ranked[0][0] if ranked else "shipped_at"
+            recommended_grain = (
+                "daily"
+                if field_summaries.get(best_field, {}).get("distinct_dates", 0) >= MIN_EVALUATION_ROWS
+                else "hourly"
+            )
+
+        recommended_summary = field_summaries.get(best_field, {})
+        training_windows = max(
+            0,
+            int(
+                recommended_summary.get(
+                    "distinct_dates" if recommended_grain == "daily" else "distinct_hours",
+                    0,
+                )
+            )
+            - sequence_length,
+        )
+        provider_status = "ok" if recommended_summary.get("non_null_records", 0) else "degraded"
+        fallback_reason = None
+        if provider_status != "ok":
+            fallback_reason = "NO_TIMELINE_FIELDS_AVAILABLE"
+        elif shipped.get("distinct_dates", 0) < MIN_EVALUATION_ROWS:
+            fallback_reason = "SHIPMENT_DAILY_POINTS_INSUFFICIENT"
+
+        return {
+            "success": True,
+            "data_source": "shipment_fact",
+            "provider_status": provider_status,
+            "fallback_reason": fallback_reason,
+            "authenticity_level": "B" if provider_status == "ok" else "C",
+            "audit_version": "shipment_timeline_audit_v1",
+            "city": city,
+            "fields": field_summaries,
+            "time_fields": field_summaries,
+            "recommended": {
+                "series_source": best_field,
+                "time_granularity": recommended_grain,
+                "training_windows": training_windows,
+                "minimum_training_windows": 32,
+                "deep_learning_ready": training_windows >= 32,
+                "status": "ready_for_deep_shadow_training" if training_windows >= 32 else "needs_more_time_points",
+            },
+            "recommended_granularity": recommended_grain,
+            "recommended_series_source": best_field,
+            "training_window_count": training_windows,
+            "truth_contract": {
+                **self._truth_contract(),
+                "timeline_audit": "real shipment_facts time columns only; no simulated dates are treated as real history",
+            },
+        }
+
     def evaluate_baselines(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = payload or {}
         tasks = self._normalise_tasks(payload.get("tasks") or DEFAULT_TASKS)
         horizon_days = max(1, min(60, self._coerce_int(payload.get("horizon_days"), 7)))
         limit = max(1, min(DEFAULT_LIMIT, self._coerce_int(payload.get("limit"), DEFAULT_LIMIT)))
         city = self._clean_text(payload.get("city") or payload.get("destination_city"))
+        time_granularity = self._normalise_granularity(payload.get("time_granularity"), default="auto")
+        series_source = self._normalise_series_source(payload.get("series_source"), default="shipped_at")
 
         results: Dict[str, Any] = {}
         for task in tasks:
             if task == "demand":
-                results[task] = self.evaluate_demand(horizon_days=horizon_days, city=city, limit=limit)
+                results[task] = self.evaluate_demand(
+                    horizon_days=horizon_days,
+                    city=city,
+                    limit=limit,
+                    time_granularity=time_granularity,
+                    series_source=series_source,
+                )
             elif task == "eta":
                 results[task] = self.evaluate_eta(limit=limit)
             elif task == "delay":
@@ -129,11 +233,20 @@ class ShipmentPredictionService:
             "truth_contract": self._truth_contract(),
         }
 
-    def forecast_demand(self, days: int = 7, city: Optional[str] = None, limit: int = DEFAULT_LIMIT) -> Dict[str, Any]:
+    def forecast_demand(
+        self,
+        days: int = 7,
+        city: Optional[str] = None,
+        limit: int = DEFAULT_LIMIT,
+        time_granularity: str = "auto",
+        series_source: str = "shipped_at",
+    ) -> Dict[str, Any]:
         return self.evaluate_demand(
             horizon_days=max(1, min(60, days)),
             city=self._clean_text(city),
             limit=max(1, min(DEFAULT_LIMIT, limit)),
+            time_granularity=self._normalise_granularity(time_granularity, default="auto"),
+            series_source=self._normalise_series_source(series_source, default="shipped_at"),
             forecast_only=True,
         )
 
@@ -537,6 +650,12 @@ class ShipmentPredictionService:
             if any(item.get("mape") is not None for item in baseline_metric_rows)
             else None
         )
+        time_series_backtest = time_series.get("backtest") if isinstance(time_series.get("backtest"), dict) else {}
+        time_series_best_model = (
+            time_series_backtest.get("best_model")
+            if isinstance(time_series_backtest.get("best_model"), dict)
+            else {}
+        )
         time_series_ready = bool(time_series.get("deep_learning_readiness", {}).get("ready"))
         capacity_shortage_days = int(capacity_gap.get("summary", {}).get("shortage_days") or 0)
         cost_risk_days = int(cost_volatility.get("summary", {}).get("risk_days") or 0)
@@ -569,7 +688,7 @@ class ShipmentPredictionService:
                 100.0 if time_series_ready else 65.0 if time_series.get("provider_status") == "ok" else 20.0,
                 "ok" if time_series_ready else "shadow",
                 {
-                    "best_model": time_series.get("backtest", {}).get("best_model", {}).get("model_id"),
+                    "best_model": time_series_best_model.get("model_id"),
                     "training_windows": time_series.get("deep_learning_readiness", {}).get("training_windows"),
                     "minimum_training_windows": time_series.get("deep_learning_readiness", {}).get("minimum_training_windows"),
                 },
@@ -675,7 +794,7 @@ class ShipmentPredictionService:
                     "avg_mape": self._round_or_none(baseline_avg_mape, 4),
                 },
                 "time_series": {
-                    "best_model": time_series.get("backtest", {}).get("best_model", {}).get("model_id"),
+                    "best_model": time_series_best_model.get("model_id"),
                     "training_windows": time_series.get("deep_learning_readiness", {}).get("training_windows"),
                     "deployment_boundary": time_series.get("deep_learning_readiness", {}).get("deployment_boundary"),
                 },
@@ -801,8 +920,86 @@ class ShipmentPredictionService:
             "model_count": len(models),
             "models": models,
             "latest_by_task": latest_by_task,
+            "job_count": len(self._jobs),
+            "latest_jobs": self._latest_job_summaries(),
             "dataset_readiness": health.get("readiness", {}),
             "training_contract": self._training_contract(),
+            "truth_contract": self._truth_contract(),
+        }
+
+    def create_prediction_job(self, payload: Optional[Dict[str, Any]] = None, app=None) -> Dict[str, Any]:
+        """Create a background prediction training/shadow-evaluation job."""
+        payload = dict(payload or {})
+        task = str(payload.get("task") or "demand").strip().lower()
+        model_family = str(payload.get("model_family") or "lstm").strip().lower()
+        job_id = f"ai-pred-{uuid4().hex[:12]}"
+        created_at = self._utc_now()
+        job = {
+            "job_id": job_id,
+            "status": "queued",
+            "task": task,
+            "model_family": model_family,
+            "runtime_profile": payload.get("runtime_profile", "full"),
+            "provider_status": "queued",
+            "fallback_reason": None,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "progress": 0.0,
+            "request": self._safe_job_request(payload),
+            "truth_contract": {
+                **self._training_contract(),
+                "job_boundary": "background shadow job; no shipment_facts mutation",
+            },
+        }
+        with self._job_lock:
+            self._jobs[job_id] = job
+
+        thread = threading.Thread(
+            target=self._run_prediction_job,
+            args=(job_id, payload, app),
+            name=f"prediction-job-{job_id}",
+            daemon=True,
+        )
+        thread.start()
+        return {
+            "success": True,
+            "data_source": "shipment_fact",
+            "provider_status": "accepted",
+            "fallback_reason": None,
+            "authenticity_level": "B",
+            "job_id": job_id,
+            "status": job["status"],
+            "task": task,
+            "model_family": model_family,
+            "runtime_profile": job["runtime_profile"],
+            "job": self._job_public_summary(job),
+            "poll_url": f"/api/ai-prediction/jobs/{job_id}",
+            "training_contract": self._training_contract(),
+            "truth_contract": self._truth_contract(),
+        }
+
+    def prediction_job_status(self, job_id: str) -> Dict[str, Any]:
+        with self._job_lock:
+            job = dict(self._jobs.get(job_id) or {})
+        if not job:
+            return {
+                "success": False,
+                "provider_status": "degraded",
+                "fallback_reason": "PREDICTION_JOB_NOT_FOUND",
+                "job_id": job_id,
+            }
+        return {
+            "success": True,
+            "data_source": "shipment_fact",
+            "provider_status": job.get("provider_status", "unknown"),
+            "fallback_reason": job.get("fallback_reason"),
+            "authenticity_level": "B" if job.get("provider_status") == "ok" else "C",
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "task": job.get("task"),
+            "model_family": job.get("model_family"),
+            "progress": job.get("progress", 0.0),
+            "job": job,
             "truth_contract": self._truth_contract(),
         }
 
@@ -964,41 +1161,89 @@ class ShipmentPredictionService:
         horizon_days: int = 7,
         city: Optional[str] = None,
         limit: int = DEFAULT_LIMIT,
+        time_granularity: str = "daily",
+        series_source: str = "shipped_at",
         forecast_only: bool = False,
     ) -> Dict[str, Any]:
-        series = self._daily_demand_series(city=city, limit=limit)
+        series_info = self._demand_prediction_series(
+            city=city,
+            limit=limit,
+            time_granularity=time_granularity,
+            series_source=series_source,
+        )
+        series = series_info.rows
         if len(series) < MIN_EVALUATION_ROWS:
-            return self._insufficient_result("demand", len(series), "DEMAND_DAILY_POINTS_INSUFFICIENT")
+            result = self._insufficient_result(
+                "demand",
+                len(series),
+                series_info.fallback_reason or "DEMAND_TIME_BUCKETS_INSUFFICIENT",
+            )
+            result.update(
+                {
+                    "prediction_target": "order_count_by_time_bucket",
+                    "model": "time_bucket_mean_baseline",
+                    "model_family": "time_series_baseline",
+                    "forecast_status": "insufficient_history",
+                    "time_granularity": series_info.grain,
+                    "series_source": series_info.source_field,
+                    "series_summary": series_info.summary,
+                    "truth_contract": {
+                        **self._truth_contract(),
+                        "demand_series": "time-bucketed real shipment_facts without treating missing history as zero forecast",
+                    },
+                }
+            )
+            return result
 
-        test_size = min(horizon_days, max(1, len(series) // 3))
+        horizon_buckets = self._forecast_horizon_buckets(horizon_days, series_info.grain)
+        test_size = min(horizon_buckets, max(1, len(series) // 3))
         train = series[:-test_size] if not forecast_only else series
         test = series[-test_size:] if not forecast_only else []
         if len(train) < 1:
-            return self._insufficient_result("demand", len(series), "DEMAND_TRAINING_POINTS_INSUFFICIENT")
+            result = self._insufficient_result("demand", len(series), "DEMAND_TRAINING_POINTS_INSUFFICIENT")
+            result.update(
+                {
+                    "forecast_status": "insufficient_training_history",
+                    "time_granularity": series_info.grain,
+                    "series_source": series_info.source_field,
+                    "series_summary": series_info.summary,
+                }
+            )
+            return result
 
-        predictions = [self._weekday_mean_predict(train, item[0]) for item in test]
+        predictions = [
+            self._time_bucket_mean_predict(train, item[0], series_info.grain)
+            for item in test
+        ]
         metrics = self._metrics(
             actual=[float(item[1]) for item in test],
             predicted=predictions,
         ) if test else self._empty_metrics()
 
-        forecast = self._forecast_daily_demand(train, horizon_days)
+        forecast = self._forecast_bucket_demand(train, horizon_buckets, series_info.grain)
         return {
             "success": True,
             "task": "demand",
-            "prediction_target": "daily_order_count",
-            "model": "weekday_mean_baseline",
+            "prediction_target": "daily_order_count" if series_info.grain == "daily" else "hourly_order_count",
+            "model": "weekday_mean_baseline" if series_info.grain == "daily" else "hour_weekday_mean_baseline",
+            "model_family": "time_series_baseline",
             "model_stage": "phase3_baseline",
             "data_source": "shipment_fact",
-            "provider_status": "ok",
-            "fallback_reason": None,
-            "authenticity_level": "B",
+            "provider_status": "ok" if series_info.status == "ok" else "degraded",
+            "fallback_reason": series_info.fallback_reason,
+            "authenticity_level": "B" if series_info.status == "ok" else "C",
+            "forecast_status": "ok" if series_info.status == "ok" else "degraded",
+            "time_granularity": series_info.grain,
+            "series_source": series_info.source_field,
+            "series_summary": series_info.summary,
             "metrics": metrics,
             "feature_summary": {
-                "daily_points": len(series),
+                "daily_points": series_info.summary.get("distinct_dates"),
+                "time_bucket_points": len(series),
                 "training_points": len(train),
                 "test_points": len(test),
                 "city": city,
+                "limit": limit,
                 "date_range": {
                     "start": series[0][0].isoformat(),
                     "end": series[-1][0].isoformat(),
@@ -1013,6 +1258,10 @@ class ShipmentPredictionService:
                 }
                 for item, pred in zip(test, predictions)
             ],
+            "truth_contract": {
+                **self._truth_contract(),
+                "demand_series": "time-bucketed real shipment_facts; empty history is degraded rather than rendered as zero demand",
+            },
         }
 
     def evaluate_eta(self, limit: int = DEFAULT_LIMIT) -> Dict[str, Any]:
@@ -1105,14 +1354,14 @@ class ShipmentPredictionService:
         }
 
     def _eta_records(self, limit: int) -> List[PredictionRecord]:
-        facts = (
+        query = (
             self._actual_delivery_query()
+            .with_entities(*self._fact_projection_columns())
             .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
             .limit(limit)
-            .all()
         )
         records = []
-        for fact in facts:
+        for fact in self._iter_query(query):
             actual_at = self._actual_at(fact)
             if not fact.shipped_at or not actual_at:
                 continue
@@ -1123,15 +1372,15 @@ class ShipmentPredictionService:
         return records
 
     def _delay_records(self, limit: int) -> List[PredictionRecord]:
-        facts = (
+        query = (
             self._actual_delivery_query()
             .filter(ShipmentFact.eta_at.isnot(None))
+            .with_entities(*self._fact_projection_columns())
             .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
             .limit(limit)
-            .all()
         )
         records = []
-        for fact in facts:
+        for fact in self._iter_query(query):
             actual_at = self._actual_at(fact)
             if not fact.eta_at or not actual_at:
                 continue
@@ -1140,17 +1389,82 @@ class ShipmentPredictionService:
         return records
 
     def _cost_records(self, limit: int) -> List[PredictionRecord]:
-        facts = (
+        query = (
             ShipmentFact.query.filter(ShipmentFact.freight.isnot(None), ShipmentFact.freight > 0)
+            .with_entities(*self._fact_projection_columns())
             .order_by(ShipmentFact.id.asc())
             .limit(limit)
-            .all()
         )
         return [
             self._record_from_fact(fact, float(fact.freight or 0.0), "freight_amount")
-            for fact in facts
+            for fact in self._iter_query(query)
             if self._coerce_float(fact.freight, 0.0) > 0
         ]
+
+    def _demand_prediction_series(
+        self,
+        city: Optional[str],
+        limit: int,
+        time_granularity: str,
+        series_source: str,
+    ) -> PredictionSeries:
+        source_candidates = self._series_source_candidates(series_source)
+        grain_candidates = self._granularity_candidates(time_granularity)
+        attempts: List[PredictionSeries] = []
+
+        for source in source_candidates:
+            for grain in grain_candidates:
+                sparse = self._bucketed_demand_series(city=city, source_field=source, grain=grain)
+                complete = self._complete_bucket_series(sparse, grain)
+                status = "ok" if len(complete) >= MIN_EVALUATION_ROWS else "degraded"
+                reason = None if status == "ok" else f"DEMAND_{grain.upper()}_POINTS_INSUFFICIENT"
+                if (
+                    status == "ok"
+                    and time_granularity == "auto"
+                    and grain == "hourly"
+                    and any(
+                        attempt.source_field == source
+                        and attempt.grain == "daily"
+                        and len(attempt.rows) < MIN_EVALUATION_ROWS
+                        for attempt in attempts
+                    )
+                ):
+                    status = "degraded"
+                    reason = "DEMAND_DAILY_POINTS_INSUFFICIENT_USING_HOURLY_FALLBACK"
+                if source != "shipped_at":
+                    reason = "BUSINESS_SHIPPED_AT_INSUFFICIENT_USING_AUXILIARY_TIME_FIELD" if status == "ok" else reason
+                    status = "degraded"
+                series = PredictionSeries(
+                    task="demand",
+                    grain=grain,
+                    source_field=source,
+                    rows=[(bucket, float(count)) for bucket, count in complete],
+                    status=status,
+                    fallback_reason=reason,
+                    summary=self._time_bucket_series_summary(
+                        sparse=sparse,
+                        complete=complete,
+                        city=city,
+                        source_field=source,
+                        grain=grain,
+                        limit=limit,
+                    ),
+                )
+                attempts.append(series)
+                if len(complete) >= MIN_EVALUATION_ROWS and (source == "shipped_at" or series_source == "auto"):
+                    return series
+
+        if not attempts:
+            return PredictionSeries(
+                task="demand",
+                grain="daily",
+                source_field="shipped_at",
+                rows=[],
+                status="degraded",
+                fallback_reason="DEMAND_TIME_BUCKETS_EMPTY",
+                summary={},
+            )
+        return max(attempts, key=lambda item: len(item.rows))
 
     def _daily_demand_series(
         self,
@@ -1165,12 +1479,48 @@ class ShipmentPredictionService:
                     ShipmentFact.origin_city_std == city,
                 )
             )
-        facts = query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
+        rows = (
+            query.with_entities(ShipmentFact.shipped_at)
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
         counts: Counter[date] = Counter()
-        for fact in facts:
-            if fact.shipped_at:
-                counts[fact.shipped_at.date()] += 1
+        for row in self._iter_query(rows):
+            shipped_at = row[0]
+            if shipped_at:
+                counts[shipped_at.date()] += 1
         return sorted(counts.items(), key=lambda item: item[0])
+
+    def _bucketed_demand_series(
+        self,
+        city: Optional[str],
+        source_field: str,
+        grain: str,
+    ) -> List[Tuple[Any, int]]:
+        column = self._series_field_column(source_field)
+        if column is None:
+            return []
+
+        query = ShipmentFact.query.filter(column.isnot(None))
+        if city:
+            query = query.filter(
+                or_(
+                    ShipmentFact.destination_city_std == city,
+                    ShipmentFact.origin_city_std == city,
+                )
+            )
+        bucket_expr = self._time_bucket_expr(column, grain)
+        rows_query = (
+            query.with_entities(bucket_expr.label("bucket"), func.count(ShipmentFact.id))
+            .group_by(bucket_expr)
+            .order_by(bucket_expr.asc())
+        )
+        rows: List[Tuple[Any, int]] = []
+        for bucket, count in self._iter_query(rows_query):
+            parsed = self._parse_time_bucket(bucket, grain)
+            if parsed is not None:
+                rows.append((parsed, int(count or 0)))
+        return sorted(rows, key=lambda item: item[0])
 
     def _demand_feature_rows(self, city: Optional[str], limit: int) -> List[Dict[str, Any]]:
         series = self._daily_demand_series(city=city, limit=limit)
@@ -1242,6 +1592,34 @@ class ShipmentPredictionService:
             )
         return forecast
 
+    def _forecast_bucket_demand(self, train: Sequence[Tuple[Any, float]], buckets: int, grain: str) -> List[Dict[str, Any]]:
+        last_bucket = train[-1][0]
+        residuals = []
+        for idx, item in enumerate(train):
+            history = train[:idx]
+            if history:
+                residuals.append(float(item[1]) - self._time_bucket_mean_predict(history, item[0], grain))
+        mean_value = statistics.mean([float(x[1]) for x in train]) if train else 0.0
+        spread = statistics.pstdev(residuals) if len(residuals) > 1 else max(1.0, mean_value * 0.15)
+
+        forecast = []
+        step = self._bucket_step(grain)
+        for offset in range(1, buckets + 1):
+            target_bucket = last_bucket + (step * offset)
+            predicted = max(0.0, self._time_bucket_mean_predict(train, target_bucket, grain))
+            forecast.append(
+                {
+                    "date": target_bucket.isoformat(),
+                    "bucket_start": target_bucket.isoformat(),
+                    "time_granularity": grain,
+                    "predicted_orders": round(predicted, 4),
+                    "lower_bound": round(max(0.0, predicted - 1.64 * spread), 4),
+                    "upper_bound": round(predicted + 1.64 * spread, 4),
+                    "method": "weekday_mean_baseline" if grain == "daily" else "hour_weekday_mean_baseline",
+                }
+            )
+        return forecast
+
     def _daily_target_series(
         self,
         task: str,
@@ -1288,6 +1666,58 @@ class ShipmentPredictionService:
             cursor += timedelta(days=1)
         return result
 
+    def _complete_bucket_series(self, sparse: Sequence[Tuple[Any, int]], grain: str) -> List[Tuple[Any, int]]:
+        if not sparse:
+            return []
+        counts = {bucket: int(count or 0) for bucket, count in sparse}
+        cursor = sparse[0][0]
+        end = sparse[-1][0]
+        step = self._bucket_step(grain)
+        result: List[Tuple[Any, int]] = []
+        while cursor <= end:
+            result.append((cursor, int(counts.get(cursor, 0))))
+            cursor = cursor + step
+        return result
+
+    def _time_bucket_series_summary(
+        self,
+        sparse: Sequence[Tuple[Any, int]],
+        complete: Sequence[Tuple[Any, int]],
+        city: Optional[str],
+        source_field: str,
+        grain: str,
+        limit: int,
+    ) -> Dict[str, Any]:
+        values = [int(count or 0) for _, count in complete]
+        dates = {
+            bucket.date() if isinstance(bucket, datetime) else bucket
+            for bucket, _ in complete
+            if isinstance(bucket, (date, datetime))
+        }
+        return {
+            "task": "demand",
+            "city": city,
+            "source_field": source_field,
+            "time_granularity": grain,
+            "limit": limit,
+            "sparse_points": len(sparse),
+            "time_bucket_points": len(complete),
+            "distinct_dates": len(dates),
+            "zero_value_buckets": sum(1 for value in values if value == 0),
+            "target_min": min(values) if values else None,
+            "target_max": max(values) if values else None,
+            "target_avg": round(float(statistics.mean(values)), 6) if values else None,
+            "date_range": {
+                "start": complete[0][0].isoformat() if complete else None,
+                "end": complete[-1][0].isoformat() if complete else None,
+            },
+            "note": (
+                "daily shipped_at history is preferred; hourly grain is an explicit degraded fallback"
+                if grain == "hourly"
+                else "daily shipped_at business history"
+            ),
+        }
+
     def _daily_numeric_records(
         self,
         task: str,
@@ -1314,16 +1744,27 @@ class ShipmentPredictionService:
         elif task == "cost":
             query = query.filter(ShipmentFact.freight.isnot(None), ShipmentFact.freight > 0)
 
-        facts = query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
+        rows_query = (
+            query.with_entities(
+                ShipmentFact.shipped_at,
+                ShipmentFact.eta_at,
+                ShipmentFact.delivered_at,
+                ShipmentFact.signed_at,
+                ShipmentFact.freight,
+            )
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
         rows: List[Tuple[date, float]] = []
-        for fact in facts:
-            if not fact.shipped_at:
+        for fact in self._iter_query(rows_query):
+            shipped_at = fact.shipped_at
+            if not shipped_at:
                 continue
             if task == "eta":
                 actual_at = self._actual_at(fact)
                 if not actual_at:
                     continue
-                value = (actual_at - fact.shipped_at).total_seconds() / 3600.0
+                value = (actual_at - shipped_at).total_seconds() / 3600.0
             elif task == "delay":
                 actual_at = self._actual_at(fact)
                 if not fact.eta_at or not actual_at:
@@ -1333,7 +1774,7 @@ class ShipmentPredictionService:
                 value = self._coerce_float(fact.freight, 0.0)
                 if value <= 0:
                     continue
-            rows.append((fact.shipped_at.date(), float(value)))
+            rows.append((shipped_at.date(), float(value)))
         return rows
 
     def _time_series_model_result(
@@ -1486,16 +1927,21 @@ class ShipmentPredictionService:
                     ShipmentFact.destination_city_std == city,
                 )
             )
-        facts = query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
-        if not facts:
-            return []
-
         grouped: Dict[date, Dict[str, float]] = defaultdict(lambda: {
             "shipment_count": 0.0,
             "weight_kg": 0.0,
             "volume_m3": 0.0,
         })
-        for fact in facts:
+        rows_query = (
+            query.with_entities(
+                ShipmentFact.shipped_at,
+                ShipmentFact.weight_kg,
+                ShipmentFact.volume_m3,
+            )
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
+        for fact in self._iter_query(rows_query):
             if not fact.shipped_at:
                 continue
             row = grouped[fact.shipped_at.date()]
@@ -1540,17 +1986,23 @@ class ShipmentPredictionService:
                     ShipmentFact.destination_city_std == city,
                 )
             )
-        facts = query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
-        if not facts:
-            return []
-
         grouped: Dict[date, Dict[str, float]] = defaultdict(lambda: {
             "shipment_count": 0.0,
             "total_freight": 0.0,
             "weight_kg": 0.0,
             "volume_m3": 0.0,
         })
-        for fact in facts:
+        rows_query = (
+            query.with_entities(
+                ShipmentFact.shipped_at,
+                ShipmentFact.freight,
+                ShipmentFact.weight_kg,
+                ShipmentFact.volume_m3,
+            )
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
+        for fact in self._iter_query(rows_query):
             if not fact.shipped_at:
                 continue
             row = grouped[fact.shipped_at.date()]
@@ -1802,6 +2254,27 @@ class ShipmentPredictionService:
         values = same_weekday or [count for _, count in train]
         return float(statistics.mean(values))
 
+    def _time_bucket_mean_predict(self, train: Sequence[Tuple[Any, float]], target_bucket: Any, grain: str) -> float:
+        if grain == "daily":
+            return self._weekday_mean_predict(train, target_bucket)
+        same_hour_weekday = [
+            value
+            for bucket, value in train
+            if isinstance(bucket, datetime)
+            and isinstance(target_bucket, datetime)
+            and bucket.weekday() == target_bucket.weekday()
+            and bucket.hour == target_bucket.hour
+        ]
+        same_hour = [
+            value
+            for bucket, value in train
+            if isinstance(bucket, datetime)
+            and isinstance(target_bucket, datetime)
+            and bucket.hour == target_bucket.hour
+        ]
+        values = same_hour_weekday or same_hour or [value for _, value in train]
+        return float(statistics.mean(values)) if values else 0.0
+
     def _predict_group_median(self, train: Sequence[PredictionRecord], item: PredictionRecord) -> float:
         exact = [row.target for row in train if row.feature_key == item.feature_key]
         if exact:
@@ -1831,7 +2304,32 @@ class ShipmentPredictionService:
             return float(unit * weight)
         return self._predict_group_median(train, item)
 
-    def _record_from_fact(self, fact: ShipmentFact, target: float, target_name: str) -> PredictionRecord:
+    def _fact_projection_columns(self):
+        return (
+            ShipmentFact.id,
+            ShipmentFact.external_shipment_id,
+            ShipmentFact.external_order_id,
+            ShipmentFact.origin_city_std,
+            ShipmentFact.destination_city_std,
+            ShipmentFact.origin_lng,
+            ShipmentFact.origin_lat,
+            ShipmentFact.destination_lng,
+            ShipmentFact.destination_lat,
+            ShipmentFact.cargo_type,
+            ShipmentFact.transport_mode,
+            ShipmentFact.freight,
+            ShipmentFact.shipped_at,
+            ShipmentFact.eta_at,
+            ShipmentFact.delivered_at,
+            ShipmentFact.signed_at,
+            ShipmentFact.weight_kg,
+            ShipmentFact.volume_m3,
+        )
+
+    def _iter_query(self, query, chunk_size: int = 1000):
+        return query.yield_per(chunk_size)
+
+    def _record_from_fact(self, fact: Any, target: float, target_name: str) -> PredictionRecord:
         mode = self._clean_text(fact.transport_mode) or "unknown_mode"
         cargo = self._clean_text(fact.cargo_type) or "unknown_cargo"
         origin = self._clean_text(fact.origin_city_std) or "unknown_origin"
@@ -1939,12 +2437,12 @@ class ShipmentPredictionService:
         }
 
     def _status_counts(self) -> Dict[str, int]:
-        rows = ShipmentFact.query.with_entities(ShipmentFact.standard_status).all()
-        result: Dict[str, int] = {}
-        for row in rows:
-            status = str(row[0] or "unknown")
-            result[status] = result.get(status, 0) + 1
-        return result
+        rows = (
+            db.session.query(ShipmentFact.standard_status, func.count(ShipmentFact.id))
+            .group_by(ShipmentFact.standard_status)
+            .all()
+        )
+        return {str(status or "unknown"): int(count or 0) for status, count in rows}
 
     def _truth_contract(self) -> Dict[str, Any]:
         return {
@@ -2317,6 +2815,143 @@ class ShipmentPredictionService:
             "truth_contract": self._truth_contract(),
         }
 
+    def _run_prediction_job(self, job_id: str, payload: Dict[str, Any], app=None) -> None:
+        def run_inside_context():
+            self._update_job(job_id, status="running", provider_status="running", progress=0.1)
+            try:
+                result = self._execute_prediction_job(payload)
+                provider_status = result.get("provider_status", "ok" if result.get("success") else "degraded")
+                self._update_job(
+                    job_id,
+                    status="completed",
+                    provider_status=provider_status,
+                    fallback_reason=result.get("fallback_reason"),
+                    progress=1.0,
+                    result=result,
+                    completed_at=self._utc_now(),
+                )
+            except Exception as exc:  # pragma: no cover - defensive job isolation
+                self._update_job(
+                    job_id,
+                    status="failed",
+                    provider_status="degraded",
+                    fallback_reason=f"PREDICTION_JOB_FAILED:{type(exc).__name__}",
+                    progress=1.0,
+                    error=str(exc),
+                    completed_at=self._utc_now(),
+                )
+
+        if app is not None:
+            with app.app_context():
+                run_inside_context()
+        else:
+            run_inside_context()
+
+    def _execute_prediction_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = str(payload.get("task") or "demand").strip().lower()
+        model_family = str(payload.get("model_family") or "lstm").strip().lower()
+        if model_family in {"tabular_baseline", "lightgbm", "xgboost", "ridge"}:
+            result = self.train_model({**payload, "task": task})
+            if result.get("model"):
+                result["model"]["requested_model_family"] = model_family
+            result["job_type"] = "tabular_training_snapshot"
+            return result
+
+        if model_family in {"lstm", "gru", "transformer", "transformerencoder", "temporal_fusion_transformer", "tft"}:
+            benchmark = self.evaluate_time_series_benchmark(
+                {
+                    **payload,
+                    "task": task,
+                    "runtime_profile": "full",
+                    "limit": self._coerce_int(payload.get("limit"), DEFAULT_LIMIT),
+                    "horizon_days": self._coerce_int(payload.get("horizon_days"), 14),
+                    "test_days": self._coerce_int(payload.get("test_days"), 14),
+                    "sequence_length": self._coerce_int(payload.get("sequence_length"), 14),
+                }
+            )
+            readiness = benchmark.get("deep_learning_readiness") or {}
+            ready = bool(readiness.get("ready"))
+            return {
+                "success": True,
+                "task": task,
+                "model_family": model_family,
+                "model_stage": "deep_shadow_job",
+                "data_source": "shipment_fact",
+                "provider_status": "ok" if ready else "degraded",
+                "fallback_reason": None if ready else readiness.get("status") or benchmark.get("fallback_reason"),
+                "authenticity_level": "B" if ready else "C",
+                "deep_learning_readiness": readiness,
+                "benchmark": benchmark,
+                "model_snapshot": None,
+                "training_contract": {
+                    **self._training_contract(),
+                    "deep_learning_boundary": (
+                        "LSTM/GRU/Transformer jobs are shadow training gates; "
+                        "no neural model is deployable until time-series windows pass readiness and backtests beat baselines"
+                    ),
+                },
+                "truth_contract": self._truth_contract(),
+            }
+
+        return {
+            "success": False,
+            "task": task,
+            "model_family": model_family,
+            "provider_status": "degraded",
+            "fallback_reason": "UNSUPPORTED_AI_JOB_MODEL_FAMILY",
+            "authenticity_level": "C",
+            "truth_contract": self._truth_contract(),
+        }
+
+    def _update_job(self, job_id: str, **updates: Any) -> None:
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            job.update(updates)
+            job["updated_at"] = self._utc_now()
+
+    def _latest_job_summaries(self, limit: int = 5) -> List[Dict[str, Any]]:
+        with self._job_lock:
+            jobs = list(self._jobs.values())
+        return [
+            self._job_public_summary(job)
+            for job in sorted(jobs, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
+        ]
+
+    def _job_public_summary(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "task": job.get("task"),
+            "model_family": job.get("model_family"),
+            "provider_status": job.get("provider_status"),
+            "fallback_reason": job.get("fallback_reason"),
+            "progress": job.get("progress", 0.0),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+            "completed_at": job.get("completed_at"),
+        }
+
+    def _safe_job_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        allowed = {
+            "task",
+            "model_family",
+            "runtime_profile",
+            "limit",
+            "horizon_days",
+            "test_days",
+            "sequence_length",
+            "city",
+            "destination_city",
+            "time_granularity",
+            "series_source",
+        }
+        return {key: payload.get(key) for key in allowed if key in payload}
+
+    def _utc_now(self) -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
     def _stable_bucket(self, value: str, bucket_count: int) -> int:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
         return int(digest[:12], 16) % bucket_count
@@ -2332,6 +2967,109 @@ class ShipmentPredictionService:
             if task and task not in result:
                 result.append(task)
         return result or list(DEFAULT_TASKS)
+
+    def _normalise_granularity(self, value: Any, default: str = "daily") -> str:
+        text = str(value or default).strip().lower()
+        return text if text in {"daily", "hourly", "auto"} else default
+
+    def _normalise_series_source(self, value: Any, default: str = "shipped_at") -> str:
+        text = str(value or default).strip().lower()
+        return text if text in {"shipped_at", "created_at", "eta_at", "delivered_at", "signed_at", "auto"} else default
+
+    def _series_source_candidates(self, source: str) -> List[str]:
+        if source == "auto":
+            return ["shipped_at", "delivered_at", "signed_at", "created_at"]
+        return [source]
+
+    def _granularity_candidates(self, granularity: str) -> List[str]:
+        if granularity == "auto":
+            return ["daily", "hourly"]
+        return [granularity]
+
+    def _series_field_column(self, source_field: str):
+        return {
+            "shipped_at": ShipmentFact.shipped_at,
+            "eta_at": ShipmentFact.eta_at,
+            "delivered_at": ShipmentFact.delivered_at,
+            "signed_at": ShipmentFact.signed_at,
+            "created_at": ShipmentFact.created_at,
+        }.get(source_field)
+
+    def _time_bucket_expr(self, column, grain: str):
+        try:
+            dialect = db.session.get_bind().dialect
+        except Exception:
+            dialect = getattr(getattr(db.session, "bind", None), "dialect", None)
+        dialect_name = getattr(dialect, "name", "")
+        if grain == "hourly":
+            if dialect_name == "sqlite":
+                return func.strftime("%Y-%m-%d %H:00:00", column)
+            return func.date_trunc("hour", column)
+        if dialect_name == "sqlite":
+            return func.strftime("%Y-%m-%d", column)
+        return func.date(column)
+
+    def _parse_time_bucket(self, value: Any, grain: str):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(minute=0, second=0, microsecond=0) if grain == "hourly" else value.date()
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time()) if grain == "hourly" else value
+        text = str(value)
+        try:
+            if grain == "hourly":
+                return datetime.fromisoformat(text.replace(" ", "T")).replace(minute=0, second=0, microsecond=0)
+            return datetime.fromisoformat(text[:10]).date()
+        except ValueError:
+            return None
+
+    def _bucket_step(self, grain: str) -> timedelta:
+        return timedelta(hours=1) if grain == "hourly" else timedelta(days=1)
+
+    def _forecast_horizon_buckets(self, horizon_days: int, grain: str) -> int:
+        days = max(1, min(60, self._coerce_int(horizon_days, 7)))
+        return days * 24 if grain == "hourly" else days
+
+    def _timeline_field_summary(self, column, name: str, city: Optional[str]) -> Dict[str, Any]:
+        query = ShipmentFact.query.filter(column.isnot(None))
+        if city:
+            query = query.filter(
+                or_(
+                    ShipmentFact.destination_city_std == city,
+                    ShipmentFact.origin_city_std == city,
+                )
+            )
+        rows_query = query.with_entities(column).order_by(column.asc(), ShipmentFact.id.asc())
+        dates = set()
+        hours = set()
+        non_null = 0
+        first_value = None
+        last_value = None
+        for row in self._iter_query(rows_query):
+            value = row[0]
+            if not value:
+                continue
+            non_null += 1
+            first_value = first_value or value
+            last_value = value
+            dates.add(value.date())
+            hours.add(value.replace(minute=0, second=0, microsecond=0))
+        total = ShipmentFact.query.count()
+        return {
+            "field": name,
+            "non_null_records": non_null,
+            "null_records": max(0, total - non_null),
+            "null_rate": round((max(0, total - non_null) / max(total, 1)), 6),
+            "distinct_dates": len(dates),
+            "distinct_hours": len(hours),
+            "range": {
+                "start": first_value.isoformat() if first_value else None,
+                "end": last_value.isoformat() if last_value else None,
+            },
+            "daily_training_windows_14": max(0, len(dates) - 14),
+            "hourly_training_windows_24": max(0, len(hours) - 24),
+        }
 
     def _haversine_km(self, lng1: Any, lat1: Any, lng2: Any, lat2: Any) -> Optional[float]:
         lng1 = self._optional_float(lng1)

@@ -43,8 +43,18 @@ def create_app(config_name='default'):
     try:
         with app.app_context():
             from app.models.dispatch import DispatchScenario, DispatchAssignment
+            from app.models.food_supply_case import (
+                CaseFoodNode,
+                CaseFoodDemand,
+                CaseFoodResource,
+                CaseFoodDistanceMatrix,
+                CaseFoodScenario,
+                CaseFoodGeocodingCache,
+            )
             DispatchScenario.__table__.create(bind=db.engine, checkfirst=True)
             DispatchAssignment.__table__.create(bind=db.engine, checkfirst=True)
+            for model in (CaseFoodNode, CaseFoodDemand, CaseFoodResource, CaseFoodDistanceMatrix, CaseFoodScenario, CaseFoodGeocodingCache):
+                model.__table__.create(bind=db.engine, checkfirst=True)
     except Exception as exc:
         print(f"[Dispatch] table ensure skipped: {exc}")
 
@@ -108,6 +118,11 @@ def create_app(config_name='default'):
     from app.routes.optimization import optimization_bp
     from app.routes.ai_prediction import register_ai_prediction_routes
     from app.routes.ai_anomaly import register_ai_anomaly_routes
+    from app.routes.runtime import runtime_bp
+    from app.routes.gis import gis_bp
+    from app.routes.agent import agent_bp
+    from app.routes.decision import decision_bp
+    from app.routes.food_supply_case import food_supply_case_bp
 
     # 注册限流错误处理器
     @app.errorhandler(429)
@@ -208,10 +223,10 @@ def create_app(config_name='default'):
 
     disable_ml_routes = os.environ.get('DISABLE_ML_ROUTES', '').lower() in ('1', 'true', 'yes')
 
-    # 注册新功能路由
-    if not disable_ml_routes:
-        from app.routes.advanced_ml import register_advanced_ml_routes
-        register_advanced_ml_routes(app)
+    # 注册新功能路由。advanced-ml 是 Vue 旧页面兼容门面，走轻量真实数据服务；
+    # legacy /api/ml 才受 DISABLE_ML_ROUTES 控制。
+    from app.routes.advanced_ml import register_advanced_ml_routes
+    register_advanced_ml_routes(app)
     register_pricing_routes(app)
     register_inventory_routes(app)
     register_multimodal_routes(app)
@@ -222,6 +237,14 @@ def create_app(config_name='default'):
     
     # 注册优化引擎路由
     app.register_blueprint(optimization_bp, url_prefix='/api/optimization')
+
+    # 注册运行态/GIS/Agent/决策接口。它们用于诊断真实运行进程、聚合 provider 状态和承载
+    # AI 专家建议层，不能返回任何密钥或 license 内容。
+    app.register_blueprint(runtime_bp, url_prefix='/api/runtime')
+    app.register_blueprint(gis_bp, url_prefix='/api/gis')
+    app.register_blueprint(agent_bp, url_prefix='/api/agent')
+    app.register_blueprint(decision_bp, url_prefix='/api/decision')
+    app.register_blueprint(food_supply_case_bp, url_prefix='/api/cases/food-supply')
 
     # 注册 ML 预测路由
     if not disable_ml_routes:

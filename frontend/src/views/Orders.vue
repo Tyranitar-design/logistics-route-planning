@@ -39,6 +39,15 @@
     
     <!-- 订单列表 -->
     <el-card class="table-card">
+      <el-alert
+        v-if="orderSourceWarning"
+        class="source-alert"
+        :title="orderSourceWarning"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+
       <el-table :data="orders" v-loading="loading" stripe>
         <el-table-column prop="order_number" label="订单号" width="150" />
         <el-table-column prop="cargo_name" label="货物名称" width="120" />
@@ -489,6 +498,22 @@ const vehicles = ref([])
 const availableVehicles = ref([])
 const loading = ref(false)
 const submitLoading = ref(false)
+const orderSourceMeta = reactive({
+  dataSource: 'unknown',
+  shipmentFactsTotal: null,
+  legacyOrdersTotal: null,
+  authenticityLevel: ''
+})
+
+const orderSourceWarning = computed(() => {
+  if (loading.value) return ''
+  const factsTotal = Number(orderSourceMeta.shipmentFactsTotal || 0)
+  if (orderSourceMeta.dataSource === 'shipment_fact' && factsTotal > 0) return ''
+  if (factsTotal <= 0) {
+    return '当前订单接口没有检测到 shipment_facts 真实数据，后端可能连接到了 SQLite 兜底库；请确认 POSTGRES_DATABASE_URL 或 DATABASE_URL 后重启后端。'
+  }
+  return `当前订单接口读取的是 ${orderSourceMeta.dataSource || 'unknown'}，真实 shipment_facts 共有 ${factsTotal} 条；如需真实明细请使用 data_source=auto 或 shipment_fact。`
+})
 
 // 搜索
 const searchForm = reactive({
@@ -554,6 +579,12 @@ const loadOrders = async () => {
     })
     orders.value = res.orders || []
     pagination.total = res.total || 0
+    Object.assign(orderSourceMeta, {
+      dataSource: res.data_source || 'unknown',
+      shipmentFactsTotal: res.shipment_facts_total ?? null,
+      legacyOrdersTotal: res.legacy_orders_total ?? null,
+      authenticityLevel: res.authenticity_level || ''
+    })
   } catch (error) {
     console.error('加载订单失败:', error)
     ElMessage.error('加载订单失败')
@@ -828,6 +859,10 @@ onMounted(() => {
 
 .table-card {
   margin-bottom: 20px;
+}
+
+.source-alert {
+  margin-bottom: 14px;
 }
 
 .route-preview {

@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 env/
 ENV/
 *.egg-info/
@@ -33,6 +34,9 @@ frontend-next/*.tsbuildinfo
 
 # 配置文件（包含敏感信息）
 .env
+.env.development
+.env.production
+.env.test
 .env.local
 .env.*.local
 config.local.py
@@ -51,6 +55,7 @@ Thumbs.db
 # 日志
 *.log
 logs/
+backend/var/
 
 # 临时文件
 *.tmp

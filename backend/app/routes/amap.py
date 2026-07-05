@@ -77,10 +77,15 @@ def provider_health():
 
         probe = str(request.args.get('probe', '0')).lower() in ('1', 'true', 'yes')
         keys = get_amap_keys()
+        key_status = provider_key_status('amap', keys)
+        key_configured = bool(key_status.get('effective_key_configured'))
         payload = {
             'success': True,
             'provider': 'amap',
-            'keys': provider_key_status('amap', keys),
+            'provider_status': 'ok' if key_configured else 'degraded',
+            'degraded': not key_configured,
+            'fallback_reason': None if key_configured else 'AMAP_KEY_MISSING',
+            'keys': key_status,
             'probed': probe,
             'components': {},
         }

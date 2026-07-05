@@ -20,6 +20,12 @@
         <el-button type="primary" size="small" @click="handleTrain" :loading="training">
           <el-icon><Cpu /></el-icon> 训练模型
         </el-button>
+        <el-button type="success" size="small" @click="handleModelPredict" :loading="predictingModel" :disabled="!modelTrained">
+          <el-icon><Cpu /></el-icon> 模型预测
+        </el-button>
+        <el-button type="warning" size="small" @click="handleDeepTrainingJob" :loading="deepJobLoading">
+          <el-icon><Cpu /></el-icon> 深度 Shadow
+        </el-button>
       </div>
     </div>
 
@@ -53,15 +59,48 @@
       </el-card>
     </div>
 
+    <div class="truth-strip">
+      <div class="truth-item">
+        <span>Forecast</span>
+        <strong>{{ forecastMeta.forecast_status || forecastMeta.provider_status || 'unknown' }}</strong>
+      </div>
+      <div class="truth-item">
+        <span>时间粒度</span>
+        <strong>{{ forecastMeta.time_granularity || timelineAudit.recommended?.time_granularity || '-' }}</strong>
+      </div>
+      <div class="truth-item">
+        <span>历史桶数</span>
+        <strong>{{ forecastMeta.series_summary?.time_bucket_points ?? timelineAudit.fields?.shipped_at?.distinct_dates ?? 0 }}</strong>
+      </div>
+      <div class="truth-item">
+        <span>深度窗口</span>
+        <strong>{{ timelineAudit.recommended?.training_windows ?? 0 }}/32</strong>
+      </div>
+      <div class="truth-item truth-item--wide">
+        <span>Job</span>
+        <strong>{{ deepJobStatusText }}</strong>
+      </div>
+    </div>
+
+    <el-alert
+      v-if="forecastWarning"
+      class="forecast-alert"
+      type="warning"
+      :closable="false"
+      show-icon
+    >
+      <template #title>{{ forecastWarning }}</template>
+    </el-alert>
+
     <!-- 核心指标 -->
     <div class="metrics-row">
       <div class="metric-card gradient-cyan">
         <div class="metric-icon">📦</div>
         <div class="metric-content">
-          <div class="metric-value">{{ summary.totalPredicted }}</div>
+          <div class="metric-value">{{ summary.totalPredicted ?? '—' }}</div>
           <div class="metric-label">预测总订单</div>
         </div>
-        <div class="metric-trend up">+{{ summary.growthRate }}%</div>
+        <div class="metric-trend up">缺口 {{ summary.growthRate }}天</div>
       </div>
       <div class="metric-card gradient-green">
         <div class="metric-icon">🚛</div>
@@ -71,10 +110,10 @@
         </div>
       </div>
       <div class="metric-card gradient-orange">
-        <div class="metric-icon">💰</div>
+        <div class="metric-icon">⚖️</div>
         <div class="metric-content">
-          <div class="metric-value">¥{{ summary.savedCost }}</div>
-          <div class="metric-label">预计节省成本</div>
+          <div class="metric-value">{{ formatNumber(summary.savedCost, 0) }}kg</div>
+          <div class="metric-label">最大重量缺口</div>
         </div>
       </div>
       <div class="metric-card gradient-purple">
@@ -93,9 +132,15 @@
         <div class="card-header">
           <div class="header-deco"><span class="deco-line"></span><span class="deco-dot"></span></div>
           <span class="card-title">📈 需求预测趋势</span>
-          <el-tag size="small" effect="dark">AI 预测</el-tag>
+          <el-tag size="small" effect="dark">{{ forecastMeta.model || 'Baseline' }}</el-tag>
         </div>
-        <div ref="trendChart" class="chart-area large"></div>
+        <div class="chart-shell">
+          <div ref="trendChart" class="chart-area large"></div>
+          <div v-if="!predictions.length" class="chart-empty">
+            <strong>历史时间跨度不足</strong>
+            <span>{{ forecastWarning || '暂无可展示预测曲线' }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- 区域分布 -->
@@ -111,20 +156,15 @@
       <div class="panel-card">
         <div class="card-header">
           <div class="header-deco"><span class="deco-line"></span><span class="deco-dot"></span></div>
-          <span class="card-title">🔄 合并配送建议</span>
-          <el-badge :value="mergeSuggestions.length" type="success" />
+          <span class="card-title">AI 预测建议</span>
+          <el-badge :value="predictionRecommendations.length" type="success" />
         </div>
         <div class="suggestions-list">
-          <div v-for="(item, i) in mergeSuggestions" :key="i" class="suggestion-item">
-            <div class="suggestion-region">{{ item.region }}</div>
-            <div class="suggestion-stats">
-              <span class="orders">{{ item.predicted_orders }}单</span>
-              <span class="save">省{{ item.saved_cost }}元</span>
-            </div>
-            <el-tag size="small" :type="item.saved_vehicles > 0 ? 'success' : 'info'">
-              {{ item.saved_vehicles > 0 ? `省${item.saved_vehicles}车` : '无需合并' }}
-            </el-tag>
+          <div v-for="(item, i) in predictionRecommendations" :key="i" class="suggestion-item suggestion-item--text">
+            <div class="suggestion-region">建议 {{ i + 1 }}</div>
+            <p class="suggestion-text">{{ item }}</p>
           </div>
+          <div v-if="!predictionRecommendations.length" class="empty-hint">暂无预测建议或后端处于降级状态</div>
         </div>
       </div>
     </div>
@@ -133,23 +173,23 @@
     <div class="panel-card full-width">
       <div class="card-header">
         <div class="header-deco"><span class="deco-line"></span><span class="deco-dot"></span></div>
-        <span class="card-title">🚚 智能车辆调配方案</span>
+        <span class="card-title">预测运力缺口</span>
       </div>
       <div class="allocation-grid">
-        <div v-for="(item, i) in vehicleAllocation" :key="i" class="allocation-item">
-          <div class="region-name">{{ item.region }}</div>
+        <div v-for="(item, i) in capacityForecast" :key="item.date || i" class="allocation-item">
+          <div class="region-name">{{ item.date || `D+${i + 1}` }}</div>
           <div class="allocation-bar">
-            <div class="bar-fill" :style="{ width: item.vehicles_needed * 10 + '%' }"></div>
+            <div class="bar-fill" :class="{ warning: item.status === 'shortage' }" :style="{ width: utilizationWidth(item) }"></div>
           </div>
           <div class="allocation-info">
-            <span class="vehicles">{{ item.vehicles_needed }}辆</span>
-            <span class="orders">{{ item.predicted_orders }}单</span>
+            <span class="vehicles">{{ formatNumber(item.predicted_shipments, 0) }}单</span>
+            <span class="orders">{{ item.status === 'shortage' ? '缺口' : '覆盖' }}</span>
           </div>
         </div>
       </div>
       <div class="allocation-summary">
-        <span class="summary-text">总计需要 <strong>{{ totalVehicles }}</strong> 辆车辆</span>
-        <el-button type="primary" size="small" @click="applyAllocation">应用调配方案</el-button>
+        <span class="summary-text">可用车辆 <strong>{{ totalVehicles }}</strong> 辆 · 缺口天数 <strong>{{ capacitySummary.shortage_days || 0 }}</strong></span>
+        <el-button type="primary" size="small" @click="applyAllocation">进入智能调度</el-button>
       </div>
     </div>
   </div>
@@ -161,26 +201,40 @@ import { Cpu } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import * as echarts from 'echarts'
 import {
-  trainModel,
-  getPredictions,
-  getAggregatedPrediction,
-  getMergeSuggestions,
-  getVehicleAllocation,
-  getModelStatus
-} from '@/api/ml'
+  createPredictionJob,
+  forecastCapacityGap,
+  getDemandForecast,
+  getPredictionJob,
+  getPredictionModelStatus,
+  getPredictionScorecard,
+  getPredictionTimelineAudit,
+  predictWithPredictionModel,
+  trainPredictionModel
+} from '@/api/aiPrediction'
+import { useRouter } from 'vue-router'
 
 // 状态
 const loading = ref(false)
 const training = ref(false)
+const predictingModel = ref(false)
+const deepJobLoading = ref(false)
 const modelTrained = ref(false)
+const trainedModelId = ref(null)
+const activeDeepJobId = ref(null)
+const deepJob = ref(null)
 const predictDays = ref(7)
 const selectedRegion = ref(null)
 const regions = ['北京', '上海', '广州', '深圳', '杭州', '成都', '武汉', '西安']
+const router = useRouter()
 
 // 数据
 const predictions = ref([])
-const mergeSuggestions = ref([])
-const vehicleAllocation = ref([])
+const predictionRecommendations = ref([])
+const capacityForecast = ref([])
+const capacitySummary = ref({})
+const fleetCapacity = ref({})
+const forecastMeta = ref({})
+const timelineAudit = ref({})
 
 // 汇总
 const summary = ref({
@@ -199,7 +253,25 @@ let charts = []
 
 // 计算总车辆数
 const totalVehicles = computed(() => {
-  return vehicleAllocation.value.reduce((sum, item) => sum + item.vehicles_needed, 0)
+  return fleetCapacity.value?.available_vehicles || 0
+})
+
+const forecastWarning = computed(() => {
+  const status = forecastMeta.value?.forecast_status || forecastMeta.value?.provider_status
+  const reason = forecastMeta.value?.fallback_reason
+  const points = forecastMeta.value?.series_summary?.time_bucket_points
+  if (reason) {
+    return `需求预测已降级：${reason}，当前可用时间桶 ${points ?? 0} 个`
+  }
+  if (status === 'degraded') return '需求预测处于降级状态，请先检查真实历史时间轴'
+  if (predictions.value.length) return ''
+  return status === 'degraded' ? '需求预测处于降级状态，请先检查真实历史时间轴' : ''
+})
+
+const deepJobStatusText = computed(() => {
+  if (!deepJob.value) return '未创建'
+  const job = deepJob.value.job || deepJob.value
+  return `${job.model_family || job.policy_family || 'shadow'} · ${job.status || 'unknown'}`
 })
 
 // 安全初始化图表
@@ -216,20 +288,118 @@ const initChart = (domRef) => {
 const handleTrain = async () => {
   training.value = true
   try {
-    const res = await trainModel(90)
+    const res = await trainPredictionModel({
+      task: 'eta',
+      runtime_profile: 'full',
+      limit: 10000
+    })
     if (res.success) {
       modelTrained.value = true
+      trainedModelId.value = res.model?.model_id || trainedModelId.value
+      const trainingSummary = res.model?.training_summary || {}
       ElNotification({
-        title: '🎉 模型训练完成',
-        message: `使用 ${res.stats.total_records} 条数据训练，平均日订单 ${res.stats.avg_daily_orders.toFixed(1)} 单`,
+        title: '模型训练完成',
+        message: `使用 ${trainingSummary.row_count || 0} 条真实 shipment_facts 特征训练 ETA baseline`,
         type: 'success',
         duration: 5000
       })
+      await handleModelPredict(false)
     }
   } catch (e) {
-    ElMessage.error('训练失败')
+    ElMessage.error(friendlyError(e, '训练失败：请稍后重试或降低训练样本数'))
   } finally {
     training.value = false
+  }
+}
+
+const handleModelPredict = async (notify = true) => {
+  predictingModel.value = true
+  try {
+    const res = await predictWithPredictionModel({
+      task: 'eta',
+      model_id: trainedModelId.value,
+      runtime_profile: 'full',
+      limit: 10000,
+      row_limit: 12
+    })
+    if (!res.success) {
+      ElMessage.warning(res.fallback_reason || res.error || '模型预测暂不可用，请先完成训练')
+      return
+    }
+    const rows = res.prediction?.rows || []
+    const avgPrediction = rows.length
+      ? rows.reduce((sum, row) => sum + Number(row.predicted_value ?? row.prediction ?? 0), 0) / rows.length
+      : 0
+    predictionRecommendations.value = [
+      `ETA 模型已返回 ${rows.length} 条预测样本，平均预测值 ${formatNumber(avgPrediction, 2)}`,
+      ...predictionRecommendations.value
+    ].slice(0, 8)
+    if (notify) {
+      ElNotification({
+        title: '模型预测完成',
+        message: `已使用模型 ${res.model?.model_id || trainedModelId.value || 'latest'} 返回 ${rows.length} 条 shadow 预测`,
+        type: 'success'
+      })
+    }
+  } catch (e) {
+    ElMessage.error(friendlyError(e, '模型预测失败：请确认后端 AI prediction 服务可用'))
+  } finally {
+    predictingModel.value = false
+  }
+}
+
+const handleDeepTrainingJob = async () => {
+  deepJobLoading.value = true
+  try {
+    const res = await createPredictionJob({
+      task: 'demand',
+      model_family: 'lstm',
+      runtime_profile: 'full',
+      limit: 50000,
+      horizon_days: predictDays.value,
+      sequence_length: 14,
+      city: selectedRegion.value
+    })
+    if (res.success) {
+      activeDeepJobId.value = res.job?.job_id
+      deepJob.value = res.job
+      ElNotification({
+        title: '深度 Shadow 任务已创建',
+        message: '任务将在后台审计 LSTM/GRU/Transformer readiness，不阻塞页面。',
+        type: 'success'
+      })
+      setTimeout(() => pollDeepJob(), 1200)
+    } else {
+      ElMessage.warning(res.fallback_reason || '深度 Shadow 任务创建失败')
+    }
+  } catch (e) {
+    ElMessage.error(friendlyError(e, '深度 Shadow 任务创建失败'))
+  } finally {
+    deepJobLoading.value = false
+  }
+}
+
+const pollDeepJob = async () => {
+  if (!activeDeepJobId.value) return
+  try {
+    const res = await getPredictionJob(activeDeepJobId.value)
+    if (res.success) {
+      deepJob.value = res.job
+      const status = res.job?.status
+      if (status && !['completed', 'failed'].includes(status)) {
+        setTimeout(() => pollDeepJob(), 1600)
+      } else if (status === 'completed') {
+        const readiness = res.job?.result?.deep_learning_readiness
+        predictionRecommendations.value = [
+          readiness?.ready
+            ? '深度模型 readiness 已通过，可进入离线回测对比。'
+            : `深度模型仍处 shadow：${res.job?.fallback_reason || readiness?.status || '训练窗口不足'}`,
+          ...predictionRecommendations.value
+        ].slice(0, 8)
+      }
+    }
+  } catch (e) {
+    console.warn('轮询深度 Shadow 任务失败:', e)
   }
 }
 
@@ -237,82 +407,107 @@ const handleTrain = async () => {
 const loadPredictions = async () => {
   loading.value = true
   try {
-    const [predRes, mergeRes, allocRes] = await Promise.all([
-      getAggregatedPrediction(predictDays.value),
-      getMergeSuggestions(),
-      getVehicleAllocation(predictDays.value)
+    const [auditRes, forecastRes, capacityRes] = await Promise.all([
+      getPredictionTimelineAudit({
+        city: selectedRegion.value,
+        sequence_length: 14
+      }),
+      getDemandForecast(predictDays.value, selectedRegion.value, 5000, {
+        runtime_profile: 'interactive',
+        time_granularity: 'auto',
+        series_source: 'shipped_at'
+      }),
+      forecastCapacityGap({
+        horizon_days: predictDays.value,
+        city: selectedRegion.value,
+        runtime_profile: 'interactive',
+        limit: 5000
+      })
     ])
+    timelineAudit.value = auditRes || {}
+    const scorecardRes = await getPredictionScorecard({
+      horizon_days: predictDays.value,
+      city: selectedRegion.value,
+      runtime_profile: 'interactive',
+      limit: 5000
+    })
     
-    if (predRes.success) {
-      const data = predRes.data
-      predictions.value = data.daily_predictions || []
+    forecastMeta.value = {
+      forecast_status: forecastRes.forecast_status,
+      provider_status: forecastRes.provider_status,
+      fallback_reason: forecastRes.fallback_reason,
+      time_granularity: forecastRes.time_granularity,
+      series_source: forecastRes.series_source,
+      series_summary: forecastRes.series_summary,
+      model: forecastRes.model
+    }
+
+    if (forecastRes.success) {
+      const forecast = forecastRes.forecast || []
+      predictions.value = forecast.map((item) => ({
+        date: item.date,
+        predicted_orders: item.predicted_orders ?? item.predicted_value ?? 0,
+        confidence_upper: item.confidence_upper ?? item.upper_bound ?? item.upper ?? item.predicted_orders ?? item.predicted_value ?? 0,
+        confidence: 90
+      }))
+      const totalPredicted = predictions.value.reduce((sum, item) => sum + Number(item.predicted_orders || 0), 0)
+      const readinessScore = scorecardRes.summary?.readiness_score
       summary.value = {
-        totalPredicted: data.total_predicted || 0,
-        vehiclesNeeded: allocRes.data?.total_vehicles_needed || 0,
-        savedCost: mergeRes.suggestions?.reduce((sum, s) => sum + s.saved_cost, 0) || 0,
-        confidence: Math.round(data.avg_confidence || 92),
-        growthRate: 15
+        totalPredicted: Math.round(totalPredicted),
+        vehiclesNeeded: capacityRes.fleet_capacity?.available_vehicles || 0,
+        savedCost: capacityRes.summary?.max_weight_gap_kg || 0,
+        confidence: Math.round(readinessScore || 0),
+        growthRate: capacityRes.summary?.shortage_days || 0
       }
-      initTrendChart(data.daily_predictions || [], data.region_distribution || {})
-      initRegionChart(data.region_distribution || {})
+      const regionName = selectedRegion.value || '全部区域'
+      if (predictions.value.length) {
+        initTrendChart(predictions.value, { [regionName]: summary.value.totalPredicted })
+        initRegionChart({ [regionName]: summary.value.totalPredicted })
+      } else {
+        summary.value.totalPredicted = null
+        initEmptyChart(trendChart.value, forecastRes.fallback_reason || '历史时间桶不足')
+        initRegionChart({})
+      }
     }
-    
-    if (mergeRes.success) {
-      mergeSuggestions.value = mergeRes.suggestions || []
-    }
-    
-    if (allocRes.success) {
-      vehicleAllocation.value = allocRes.data?.allocations || []
-    }
+
+    capacityForecast.value = capacityRes.forecast || []
+    capacitySummary.value = capacityRes.summary || {}
+    fleetCapacity.value = capacityRes.fleet_capacity || {}
+    predictionRecommendations.value = [
+      forecastRes.fallback_reason ? `需求预测降级：${forecastRes.fallback_reason}` : null,
+      `时间轴：shipped_at 日 ${auditRes.fields?.shipped_at?.distinct_dates || 0} 天 / 小时 ${auditRes.fields?.shipped_at?.distinct_hours || 0} 桶`,
+      ...(scorecardRes.recommendations || []),
+      ...(capacityRes.recommendations || [])
+    ].filter(Boolean).slice(0, 8)
   } catch (e) {
     console.error('加载预测失败:', e)
-    // 使用模拟数据
-    loadMockData()
+    ElMessage.error(friendlyError(e, 'AI 预测接口加载失败，请检查 /api/ai-prediction 后端链路'))
   } finally {
     loading.value = false
   }
 }
 
-// 模拟数据
-const loadMockData = () => {
-  predictions.value = Array.from({ length: predictDays.value }, (_, i) => {
-    const date = new Date()
-    date.setDate(date.getDate() + i + 1)
-    return {
-      date: date.toISOString().split('T')[0],
-      predicted_orders: Math.floor(150 + Math.random() * 100),
-      confidence_lower: Math.floor(120 + Math.random() * 50),
-      confidence_upper: Math.floor(200 + Math.random() * 100),
-      confidence: 95 - i * 2
-    }
-  })
-  
-  mergeSuggestions.value = [
-    { region: '上海', predicted_orders: 520, saved_vehicles: 3, saved_cost: 1500 },
-    { region: '北京', predicted_orders: 480, saved_vehicles: 2, saved_cost: 1000 },
-    { region: '广州', predicted_orders: 350, saved_vehicles: 2, saved_cost: 800 },
-    { region: '深圳', predicted_orders: 300, saved_vehicles: 1, saved_cost: 500 }
-  ]
-  
-  vehicleAllocation.value = [
-    { region: '上海', vehicles_needed: 5, predicted_orders: 520 },
-    { region: '北京', vehicles_needed: 4, predicted_orders: 480 },
-    { region: '广州', vehicles_needed: 3, predicted_orders: 350 },
-    { region: '深圳', vehicles_needed: 3, predicted_orders: 300 },
-    { region: '杭州', vehicles_needed: 2, predicted_orders: 220 },
-    { region: '成都', vehicles_needed: 2, predicted_orders: 180 }
-  ]
-  
-  summary.value = {
-    totalPredicted: 2050,
-    vehiclesNeeded: 19,
-    savedCost: 3800,
-    confidence: 89,
-    growthRate: 12
+const friendlyError = (error, fallback) => {
+  if (error?.code === 'ECONNABORTED' || String(error?.message || '').includes('timeout')) {
+    return 'AI 请求超时：首屏已使用轻量模式，训练/全量分析请稍后手动重试'
   }
-  
-  initTrendChart(predictions.value, {})
-  initRegionChart({ '上海': 520, '北京': 480, '广州': 350, '深圳': 300, '杭州': 220, '成都': 180 })
+  if (!error?.response) return '后端不可达：请确认 Flask 服务已启动'
+  return error.response.data?.fallback_reason || error.response.data?.error || fallback
+}
+
+const formatNumber = (value, digits = 0) => {
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) return '-'
+  return new Intl.NumberFormat('zh-CN', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits
+  }).format(numberValue)
+}
+
+const utilizationWidth = (item) => {
+  const utilization = Number(item.weight_utilization || item.volume_utilization || 0)
+  const percent = Number.isFinite(utilization) ? Math.max(3, Math.min(100, utilization * 100)) : 3
+  return `${percent}%`
 }
 
 // 初始化趋势图
@@ -365,12 +560,44 @@ const initTrendChart = (data, regionDist) => {
   })
 }
 
+const initEmptyChart = (domRef, reason = '历史时间桶不足') => {
+  const chart = initChart(domRef)
+  if (!chart) return
+  chart.setOption({
+    backgroundColor: 'transparent',
+    title: {
+      text: '暂无可预测趋势',
+      subtext: reason,
+      left: 'center',
+      top: 'middle',
+      textStyle: { color: 'rgba(255,255,255,0.82)', fontSize: 16 },
+      subtextStyle: { color: 'rgba(255,255,255,0.48)', fontSize: 12 }
+    },
+    xAxis: { show: false },
+    yAxis: { show: false },
+    series: []
+  })
+}
+
 // 初始化区域分布图
 const initRegionChart = (regionDist) => {
   const chart = initChart(regionChart.value)
   if (!chart) return
   
   const data = Object.entries(regionDist).map(([name, value]) => ({ name, value }))
+  if (!data.length) {
+    chart.setOption({
+      backgroundColor: 'transparent',
+      title: {
+        text: '暂无区域预测',
+        left: 'center',
+        top: 'middle',
+        textStyle: { color: 'rgba(255,255,255,0.72)', fontSize: 14 }
+      },
+      series: []
+    })
+    return
+  }
   
   chart.setOption({
     backgroundColor: 'transparent',
@@ -392,10 +619,11 @@ const initRegionChart = (regionDist) => {
 
 // 应用调配方案
 const applyAllocation = () => {
+  router.push('/dispatch')
   ElNotification({
-    title: '✅ 调配方案已应用',
-    message: `已安排 ${totalVehicles.value} 辆车辆进行配送`,
-    type: 'success'
+    title: '已进入智能调度',
+    message: '预测结果仅做 shadow planning，实际派车由调度求解器校验。',
+    type: 'info'
   })
 }
 
@@ -405,8 +633,9 @@ const handleResize = () => charts.forEach(c => c.resize())
 onMounted(async () => {
   // 检查模型状态
   try {
-    const status = await getModelStatus()
-    modelTrained.value = status.is_trained
+    const status = await getPredictionModelStatus()
+    modelTrained.value = Number(status.model_count || 0) > 0
+    trainedModelId.value = status.latest_by_task?.eta?.model_id || null
   } catch (e) {}
   
   // 加载预测数据
@@ -536,6 +765,40 @@ onUnmounted(() => {
 .config-title { font-size: 14px; font-weight: 600; color: #fff; }
 .config-form { padding: 8px 0; }
 
+.truth-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.truth-item {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+
+.truth-item span {
+  display: block;
+  font-size: 11px;
+  color: rgba(255,255,255,0.48);
+  margin-bottom: 4px;
+}
+
+.truth-item strong {
+  display: block;
+  font-size: 13px;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forecast-alert {
+  margin-bottom: 16px;
+}
+
 /* 指标卡片 */
 .metrics-row {
   display: grid;
@@ -599,6 +862,28 @@ onUnmounted(() => {
 .chart-area { height: 200px; }
 .chart-area.large { height: 320px; }
 
+.chart-shell {
+  position: relative;
+}
+
+.chart-empty {
+  position: absolute;
+  inset: auto 18px 18px 18px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 217, 61, 0.1);
+  border: 1px solid rgba(255, 217, 61, 0.22);
+  color: rgba(255,255,255,0.72);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.chart-empty strong {
+  color: #ffd93d;
+}
+
 /* 建议列表 */
 .suggestions-list {
   max-height: 280px;
@@ -615,10 +900,30 @@ onUnmounted(() => {
   border-left: 3px solid #00ff88;
 }
 
+.suggestion-item--text {
+  align-items: flex-start;
+}
+
 .suggestion-region {
   font-weight: 600;
   color: #fff;
   width: 60px;
+  flex: 0 0 auto;
+}
+
+.suggestion-text {
+  margin: 0;
+  color: rgba(255,255,255,0.76);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.empty-hint {
+  padding: 18px;
+  color: rgba(255,255,255,0.5);
+  text-align: center;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
 }
 
 .suggestion-stats {
@@ -658,6 +963,10 @@ onUnmounted(() => {
   height: 100%;
   background: linear-gradient(90deg, #00d4ff, #00ff88);
   border-radius: 3px;
+}
+
+.bar-fill.warning {
+  background: linear-gradient(90deg, #ffd93d, #ff6b6b);
 }
 
 .allocation-info {

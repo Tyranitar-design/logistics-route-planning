@@ -12,8 +12,11 @@ class WebSocketService {
   constructor() {
     this.socket = null
     this.connected = false
+    this.connecting = false
     this.reconnectAttempts = 0
     this.maxReconnectAttempts = 5
+    this.heartbeatInterval = null
+    this.errorNotified = false
     this.listeners = {
       vehicle_positions: [],
       order_update: [],
@@ -27,9 +30,21 @@ class WebSocketService {
    * 连接 WebSocket
    */
   connect(url = '') {
-    if (this.socket && this.connected) {
-      console.log('[WS] 已经连接，无需重复连接')
-      return
+    const disabled = String(import.meta.env.VITE_WS_DISABLED || '').toLowerCase()
+    if (['1', 'true', 'yes'].includes(disabled)) {
+      console.info('[WS] 实时推送已通过 VITE_WS_DISABLED 禁用')
+      return null
+    }
+
+    if (this.socket && (this.connected || this.connecting || this.socket.active || this.socket.connected)) {
+      console.log('[WS] 已存在连接或重连任务，无需重复连接')
+      return this.socket
+    }
+
+    if (this.socket) {
+      this.socket.removeAllListeners()
+      this.socket.close()
+      this.socket = null
     }
 
     console.log('[WS] 正在连接...', url)
@@ -37,14 +52,23 @@ class WebSocketService {
     // 开发环境优先跟随当前页面 host，避免 localhost / 127.0.0.1 混用导致 websocket 握手失败
     const currentProtocol = window.location.protocol === 'https:' ? 'https' : 'http'
     const currentHost = window.location.hostname || '127.0.0.1'
-    const devSocketUrl = url || `${currentProtocol}://${currentHost}:5000`
     const isProd = import.meta.env.PROD
-    const socketUrl = isProd ? window.location.origin : devSocketUrl
-    const transports = isProd ? ['websocket', 'polling'] : ['polling']
+    const configuredUrl = (import.meta.env.VITE_WS_URL || '').trim()
+    const devSocketUrl = url || configuredUrl || `${currentProtocol}://${currentHost}:5000`
+    const socketUrl = isProd ? (url || configuredUrl || window.location.origin) : devSocketUrl
+    const configuredTransports = String(import.meta.env.VITE_WS_TRANSPORTS || '')
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+    const transports = configuredTransports.length
+      ? configuredTransports
+      : (isProd ? ['websocket', 'polling'] : ['polling'])
 
     console.log('[WS] 连接地址:', socketUrl)
     console.log('[WS] 传输模式:', transports.join(', '))
 
+    this.connecting = true
+    this.errorNotified = false
     this.socket = io(socketUrl, {
       path: '/socket.io/',
       transports,
@@ -57,12 +81,15 @@ class WebSocketService {
       forceNew: true,
       timeout: 20000
     })
+    window.socketInstance = this.socket
 
     // 连接成功
     this.socket.on('connect', () => {
       console.log('[WS] 连接成功')
       this.connected = true
+      this.connecting = false
       this.reconnectAttempts = 0
+      this.errorNotified = false
       this.emit('connected')
       
       // 订阅频道
@@ -75,14 +102,17 @@ class WebSocketService {
     this.socket.on('disconnect', (reason) => {
       console.log('[WS] 连接断开:', reason)
       this.connected = false
+      this.connecting = false
       this.emit('disconnected', reason)
     })
 
     // 连接错误
     this.socket.on('connect_error', (error) => {
-      console.error('[WS] 连接错误:', error)
+      console.warn('[WS] 连接错误:', error?.message || error)
+      this.connecting = false
       this.reconnectAttempts++
-      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts && !this.errorNotified) {
+        this.errorNotified = true
         ElMessage.warning('实时推送连接失败，部分功能可能不可用')
       }
     })
@@ -156,6 +186,7 @@ class WebSocketService {
 
     // 启动心跳
     this.startHeartbeat()
+    return this.socket
   }
 
   /**
@@ -166,6 +197,12 @@ class WebSocketService {
       this.socket.disconnect()
       this.socket = null
       this.connected = false
+      this.connecting = false
+      window.socketInstance = null
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval)
+        this.heartbeatInterval = null
+      }
       console.log('[WS] 已断开连接')
     }
   }
@@ -183,6 +220,9 @@ class WebSocketService {
    * 发送心跳
    */
   startHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+    }
     this.heartbeatInterval = setInterval(() => {
       if (this.socket && this.connected) {
         this.socket.emit('ping')
@@ -227,5 +267,11 @@ class WebSocketService {
 
 // 导出单例
 export const wsService = new WebSocketService()
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    wsService.disconnect()
+  })
+}
 
 export default wsService

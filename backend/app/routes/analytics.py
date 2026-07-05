@@ -89,6 +89,263 @@ def get_operations_scorecard():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _interactive_payload(default_limit=5000, default_trend_days=30, default_lane_limit=10):
+    if request.method == 'POST':
+        raw = request.get_json(silent=True) or {}
+    else:
+        raw = dict(request.args)
+
+    runtime_profile = str(raw.get('runtime_profile') or 'interactive').lower()
+    runtime_profile = 'full' if runtime_profile == 'full' else 'interactive'
+    max_limit = 50000 if runtime_profile == 'full' else 5000
+
+    def as_int(name, default, low, high):
+        try:
+            value = int(raw.get(name, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(low, min(high, value))
+
+    return {
+        'runtime_profile': runtime_profile,
+        'limit': as_int('limit', default_limit, 1, max_limit),
+        'trend_days': as_int('trend_days', default_trend_days, 7, 120),
+        'lane_limit': as_int('lane_limit', default_lane_limit, 3, 30),
+        'horizon_days': as_int('horizon_days', 7, 1, 60),
+        'anomaly_limit': as_int('anomaly_limit', 20, 1, 100),
+        'city': raw.get('city') or raw.get('destination_city'),
+    }
+
+
+def _safe_component(name, factory, degraded_value):
+    try:
+        result = factory()
+        if isinstance(result, dict):
+            return result
+        return degraded_value
+    except Exception as exc:
+        logger.exception("企业摘要组件 %s 降级: %s", name, exc)
+        value = dict(degraded_value)
+        value.update({
+            'success': False,
+            'provider_status': 'degraded',
+            'fallback_reason': f'{name.upper()}_COMPONENT_FAILED',
+            'error': exc.__class__.__name__,
+        })
+        return value
+
+
+def _forecast_points(forecast):
+    points = []
+    for item in (forecast.get('forecast') or []):
+        value = item.get('predicted_orders', item.get('value', 0))
+        points.append({
+            'date': item.get('date') or item.get('bucket_start'),
+            'bucket_start': item.get('bucket_start') or item.get('date'),
+            'value': value,
+            'predicted_orders': value,
+            'lower': item.get('lower_bound', item.get('lower', value)),
+            'upper': item.get('upper_bound', item.get('upper', value)),
+            'method': item.get('method') or forecast.get('model'),
+            'time_granularity': item.get('time_granularity') or forecast.get('time_granularity'),
+        })
+    return points
+
+
+def _component_name(component):
+    names = {
+        'transport_base': '基础运输',
+        'fuel_and_toll_estimate': '燃油路桥',
+        'handling_service_estimate': '装卸服务',
+        'insurance_and_other': '保险其他',
+    }
+    return names.get(component, component)
+
+
+def _enterprise_recommendations(operations, prediction, anomaly, capabilities):
+    recommendations = []
+    recommendations.extend(operations.get('recommendations') or [])
+    recommendations.extend(prediction.get('recommendations') or [])
+    recommendations.extend(anomaly.get('recommendations') or [])
+    recommendations.extend(capabilities.get('recommendations') or [])
+    if not recommendations:
+        recommendations.append('真实 shipment_facts 指标已可用；建议先以 interactive 模式做页面分析，深度训练继续走后台 shadow job。')
+    return recommendations[:8]
+
+
+@analytics_bp.route('/enterprise-summary', methods=['GET', 'POST'])
+@jwt_required()
+def get_enterprise_summary():
+    """Aggregate real shipment_facts analytics for upgraded Vue pages.
+
+    This endpoint is intentionally defensive: optional AI/optimization
+    components degrade independently so dashboards do not fall back to random
+    mock data or crash because one heavy shadow component is unavailable.
+    """
+    payload = _interactive_payload()
+    base_payload = {
+        'runtime_profile': payload['runtime_profile'],
+        'limit': payload['limit'],
+        'trend_days': payload['trend_days'],
+        'lane_limit': payload['lane_limit'],
+        'city': payload['city'],
+    }
+
+    operations = _safe_component(
+        'operations',
+        lambda: get_shipment_cost_analytics_service().operations_summary(base_payload),
+        {'success': False, 'data_source': 'shipment_fact', 'kpis': {}, 'trend': [], 'top_lanes': []},
+    )
+    operations_scorecard = _safe_component(
+        'operations_scorecard',
+        lambda: get_shipment_cost_analytics_service().operations_scorecard(base_payload),
+        {'success': False, 'data_source': 'shipment_fact', 'summary': {}, 'components': []},
+    )
+
+    prediction = _safe_component(
+        'prediction',
+        lambda: __import__(
+            'app.services.shipment_prediction_service',
+            fromlist=['get_shipment_prediction_service'],
+        ).get_shipment_prediction_service().forecast_demand(
+            days=payload['horizon_days'],
+            city=payload['city'],
+            limit=payload['limit'],
+            time_granularity='auto',
+            series_source='shipped_at',
+        ),
+        {'success': False, 'data_source': 'shipment_fact', 'forecast': [], 'series_summary': {}},
+    )
+    prediction_status = _safe_component(
+        'prediction_status',
+        lambda: __import__(
+            'app.services.shipment_prediction_service',
+            fromlist=['get_shipment_prediction_service'],
+        ).get_shipment_prediction_service().model_status(),
+        {'success': False, 'data_source': 'shipment_fact', 'models': [], 'latest_jobs': []},
+    )
+
+    anomaly_payload = {
+        'runtime_profile': payload['runtime_profile'],
+        'limit': payload['limit'],
+        'anomaly_limit': payload['anomaly_limit'],
+        'use_ml': False,
+    }
+    anomaly = _safe_component(
+        'anomaly',
+        lambda: __import__(
+            'app.services.shipment_anomaly_service',
+            fromlist=['get_shipment_anomaly_service'],
+        ).get_shipment_anomaly_service().scorecard(anomaly_payload),
+        {'success': False, 'data_source': 'shipment_fact', 'summary': {}, 'components': [], 'evidence': {}},
+    )
+    capabilities = _safe_component(
+        'capabilities',
+        lambda: __import__(
+            'app.services.optional_capability_service',
+            fromlist=['get_optional_capability_service'],
+        ).get_optional_capability_service().check(run_smoke=False),
+        {'success': False, 'provider_status': 'degraded', 'summary': {}, 'capabilities': []},
+    )
+
+    kpis = operations.get('kpis') or {}
+    op_summary = operations.get('summary') or {}
+    anomaly_summary = anomaly.get('summary') or {}
+    capability_summary = capabilities.get('summary') or {}
+    provider_status = 'ok'
+    fallback_reasons = []
+    for item in [operations, operations_scorecard, prediction, prediction_status, anomaly, capabilities]:
+        if item.get('provider_status') == 'degraded' or item.get('success') is False:
+            provider_status = 'degraded'
+        reason = item.get('fallback_reason')
+        if reason:
+            fallback_reasons.append(str(reason))
+
+    cost_components = [
+        {
+            'name': _component_name(item.get('component')),
+            'component': item.get('component'),
+            'value': item.get('amount', 0),
+            'amount': item.get('amount', 0),
+            'percent': round(float(item.get('share') or 0) * 100, 2),
+            'share': item.get('share', 0),
+            'source': item.get('source'),
+        }
+        for item in (operations.get('cost_components') or [])
+    ]
+    top_lanes = operations.get('top_lanes') or []
+    city_breakdown = operations.get('city_breakdown') or []
+    forecast_points = _forecast_points(prediction)
+
+    total_shipments = int(kpis.get('total_shipments') or op_summary.get('records_scanned') or 0)
+    exception_rate = float(kpis.get('exception_rate') or 0)
+    on_time_rate = kpis.get('on_time_rate')
+
+    response = {
+        'success': True,
+        'data_source': 'shipment_fact',
+        'provider_status': provider_status,
+        'fallback_reason': ';'.join(fallback_reasons) if fallback_reasons else None,
+        'authenticity_level': 'B' if provider_status == 'ok' else 'C',
+        'runtime_profile': payload['runtime_profile'],
+        'runtime_limits': {
+            'limit': payload['limit'],
+            'trend_days': payload['trend_days'],
+            'lane_limit': payload['lane_limit'],
+            'horizon_days': payload['horizon_days'],
+            'anomaly_limit': payload['anomaly_limit'],
+        },
+        'summary': {
+            'total_orders': total_shipments,
+            'shipment_facts_total': total_shipments,
+            'records_scanned': op_summary.get('records_scanned', total_shipments),
+            'total_cost': kpis.get('total_freight', 0),
+            'total_freight': kpis.get('total_freight', 0),
+            'avg_cost': kpis.get('avg_freight_per_paid_shipment') or kpis.get('avg_freight_per_shipment') or 0,
+            'on_time_rate': on_time_rate,
+            'completion_rate': kpis.get('delivery_completion_rate', 0),
+            'exception_rate': exception_rate,
+            'high_risk_count': (anomaly_summary.get('by_level') or {}).get('critical', 0)
+                + (anomaly_summary.get('by_level') or {}).get('high', 0),
+            'anomaly_count': anomaly_summary.get('anomaly_count', 0),
+            'readiness_score': (operations_scorecard.get('summary') or {}).get('readiness_score'),
+            'capability_available': capability_summary.get('available'),
+            'capability_total': capability_summary.get('total'),
+        },
+        'kpis': kpis,
+        'scorecard': operations_scorecard,
+        'trend': operations.get('trend') or [],
+        'top_lanes': top_lanes,
+        'city_breakdown': city_breakdown,
+        'cost_components': cost_components,
+        'prediction': {
+            'success': prediction.get('success', True),
+            'provider_status': prediction.get('provider_status'),
+            'fallback_reason': prediction.get('fallback_reason'),
+            'forecast_status': prediction.get('forecast_status'),
+            'model_family': prediction.get('model_family'),
+            'model_stage': prediction.get('model_stage'),
+            'time_granularity': prediction.get('time_granularity'),
+            'series_summary': prediction.get('series_summary') or {},
+            'forecast': prediction.get('forecast') or [],
+            'predictions': forecast_points,
+            'models': prediction_status.get('models') or [],
+            'latest_jobs': prediction_status.get('latest_jobs') or [],
+        },
+        'anomaly': anomaly,
+        'capabilities': capabilities,
+        'recommendations': _enterprise_recommendations(operations, prediction, anomaly, capabilities),
+        'truth_contract': {
+            'business_mutation': 'none',
+            'primary_source': 'shipment_facts',
+            'cost_source': 'shipment_facts.freight',
+            'prediction_boundary': 'time_series_baseline_online; deep models background/shadow until readiness passes',
+            'rl_boundary': 'shadow_rerank_only; dispatch solver owns hard constraints',
+        },
+    }
+    return jsonify(response)
+
+
 @analytics_bp.route('/trend', methods=['GET'])
 @jwt_required()
 def get_trend():

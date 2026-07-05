@@ -193,6 +193,42 @@ class GurobiNetworkDesignService:
             "data_source": "payload_demo",
         }
 
+    def database_dataset_payload(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return a bounded real shipment_facts network dataset for UI previews."""
+        payload = {**(payload or {}), "use_database": True}
+        dataset = self._build_dataset_from_database(payload)
+        source_mode = dataset.metadata.get("source_mode")
+        is_real = dataset.data_source == "shipment_fact_od_aggregate" and source_mode == "database_od_aggregate"
+        total_demand = sum(customer.demand for customer in dataset.customers)
+        total_capacity = sum(candidate.capacity for candidate in dataset.candidates)
+
+        return {
+            "success": True,
+            "status": "success",
+            "customers": [customer.to_dict() for customer in dataset.customers],
+            "candidates": [candidate.to_dict() for candidate in dataset.candidates],
+            "distance_matrix": dataset.distance_matrix,
+            "transport_cost_per_km": dataset.transport_cost_per_km,
+            "max_facilities": dataset.max_facilities,
+            "data_source": dataset.data_source,
+            "distance_source": dataset.distance_source if is_real else "haversine_payload",
+            "path_source": "shipment_fact_city_od_aggregate" if is_real else "synthetic_preview",
+            "authenticity_level": dataset.authenticity_level if is_real else "D",
+            "fallback_reason": (
+                "coordinate_city_aggregate_not_navigation_path"
+                if is_real
+                else "SHIPMENT_FACT_NETWORK_DATA_UNAVAILABLE_USING_DEMO"
+            ),
+            "summary": {
+                "customers": len(dataset.customers),
+                "candidates": len(dataset.candidates),
+                "total_demand": round(total_demand, 4),
+                "total_capacity": round(total_capacity, 4),
+                "capacity_coverage_rate": round(total_capacity / total_demand, 4) if total_demand else 0.0,
+                **dataset.metadata,
+            },
+        }
+
     def _build_dataset(self, payload: Dict[str, Any]) -> NetworkDesignDataset:
         if payload.get("use_database"):
             return self._build_dataset_from_database(payload)
@@ -233,6 +269,7 @@ class GurobiNetworkDesignService:
     def _build_dataset_from_database(self, payload: Dict[str, Any]) -> NetworkDesignDataset:
         customer_limit = min(max(int(payload.get("customer_limit") or 6), 1), MAX_NETWORK_CUSTOMERS)
         candidate_limit = min(max(int(payload.get("candidate_limit") or 4), 1), MAX_NETWORK_CANDIDATES)
+        shipment_facts_total = ShipmentFact.query.count()
 
         customer_rows = (
             ShipmentFact.query.with_entities(
@@ -320,6 +357,9 @@ class GurobiNetworkDesignService:
                 "source_mode": "database_od_aggregate",
                 "customer_limit": customer_limit,
                 "candidate_limit": candidate_limit,
+                "shipment_facts_total": int(shipment_facts_total),
+                "customer_bucket_count": len(customer_rows),
+                "candidate_bucket_count": len(candidate_rows),
             },
         )
 

@@ -137,13 +137,16 @@ AMAP_RESTAPI_IPV4=<new-amap-ipv4>
 仓库提供腾讯云部署辅助脚本：
 
 ```powershell
-python scripts\deploy_tencent_cloud_command_center.py --skip-dump
+python scripts\deploy_tencent_cloud_command_center.py --identity-file <local-ssh-private-key> --skip-dump
 ```
 
 常用参数：
 
 - `--skip-dump`：只更新代码和容器，不重新导入数据库。
+- `--identity-file`：使用本地 SSH 私钥登录服务器；使用该模式时远程用户需要具备免密 sudo。
 - `--verify`：只执行远程健康检查。
 - `--check-only`：只检查远程主机环境。
 
 脚本会保留远端已有 `.env.production`。请不要把真实 `.env.production`、SSH 密码、数据库密码或 API Key 提交到 GitHub。
+
+食品供应链案例需要随 release 包一起发布。生产 compose 会将 `./案例一：食品供应链仓配优化(1)` 只读挂载到后端容器 `/app/cases/food-supply`，并通过 `FOOD_SUPPLY_CASE_DIR` 指定读取路径，避免案例 Excel 与生产 `shipment_facts` 混用。

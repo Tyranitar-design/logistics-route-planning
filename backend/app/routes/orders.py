@@ -6,6 +6,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from pydantic import ValidationError
 from datetime import datetime
 from math import ceil
+from sqlalchemy import func
 
 from app.models import db, Order, User, Node
 from app.models.layered_data import ShipmentFact
@@ -15,6 +16,52 @@ from app.services.kafka_service import send_order_event
 from app.utils.rate_limiter import rate_limit, RateLimits
 
 orders_bp = Blueprint('orders', __name__)
+
+
+def _normalize_order_data_source(value: str | None = None) -> str:
+    source = (value or request.args.get('data_source') or 'auto').strip().lower()
+    if source in {'shipment_fact', 'shipment_facts', 'facts', 'fact'}:
+        return 'shipment_fact'
+    if source in {'orders', 'legacy', 'legacy_orders'}:
+        return 'orders'
+    return 'auto'
+
+
+def _shipment_fact_total() -> int:
+    return ShipmentFact.query.count()
+
+
+def _legacy_order_total() -> int:
+    return Order.query.count()
+
+
+def _should_use_shipment_facts(data_source: str | None = None) -> bool:
+    """
+    当前真实业务主源是 shipment_facts。
+
+    旧逻辑只有在 legacy orders 为空时才切到事实表；只要旧演示订单残留，
+    Vue 统计就会显示 0 或极小数。auto 模式现在优先真实事实表，仍允许
+    data_source=orders 显式查看 legacy orders。
+    """
+    normalized = _normalize_order_data_source(data_source)
+    if normalized == 'orders':
+        return False
+    fact_total = _shipment_fact_total()
+    if normalized == 'shipment_fact':
+        return fact_total > 0
+    return fact_total > 0
+
+
+def _shipment_status_counts() -> dict:
+    rows = (
+        db.session.query(
+            ShipmentFact.standard_status,
+            func.count(ShipmentFact.id).label('count'),
+        )
+        .group_by(ShipmentFact.standard_status)
+        .all()
+    )
+    return {status or 'unknown': int(count or 0) for status, count in rows}
 
 
 def _serialize_shipment_fact_as_order(fact: ShipmentFact) -> dict:
@@ -96,6 +143,9 @@ def _paginate_shipment_fact_orders(page: int, per_page: int, status: str | None,
         'pages': ceil(total / per_page) if total else 0,
         'current_page': page,
         'data_source': 'shipment_fact',
+        'legacy_orders_total': _legacy_order_total(),
+        'shipment_facts_total': total,
+        'authenticity_level': 'real_postgresql_shipment_facts',
     }
 
 @orders_bp.route('', methods=['GET'])
@@ -124,7 +174,7 @@ def get_orders():
             (Order.customer_name.ilike(f'%{search}%'))
         )
 
-    if Order.query.count() == 0 and ShipmentFact.query.count() > 0:
+    if _should_use_shipment_facts(request.args.get('data_source')):
         return jsonify(_paginate_shipment_fact_orders(
             page=page,
             per_page=per_page,
@@ -143,7 +193,10 @@ def get_orders():
         'orders': orders,
         'total': pagination.total,
         'pages': pagination.pages,
-        'current_page': page
+        'current_page': page,
+        'data_source': 'orders',
+        'legacy_orders_total': pagination.total,
+        'shipment_facts_total': _shipment_fact_total(),
     })
 
 @orders_bp.route('', methods=['POST'])
@@ -272,9 +325,37 @@ def delete_order(order_id):
     return jsonify({'message': '订单删除成功'})
 
 @orders_bp.route('/stats', methods=['GET'])
+@orders_bp.route('/statistics', methods=['GET'])
 @jwt_required()
 def get_order_stats():
     """获取订单统计"""
+    if _should_use_shipment_facts(request.args.get('data_source')):
+        status_counts = _shipment_status_counts()
+        assigned = status_counts.get('assigned', 0) + status_counts.get('pending', 0)
+        in_transit = status_counts.get('in_transit', 0)
+        delivered = status_counts.get('delivered', 0)
+        exception = status_counts.get('exception', 0)
+        cancelled = status_counts.get('cancelled', 0)
+        total = sum(status_counts.values())
+
+        return jsonify({
+            'total': total,
+            'pending': assigned,
+            'assigned': assigned,
+            'in_progress': in_transit,
+            'in_transit': in_transit,
+            'completed': delivered,
+            'delivered': delivered,
+            'cancelled': cancelled,
+            'exception': exception,
+            'status_counts': status_counts,
+            'data_source': 'shipment_fact',
+            'legacy_orders_total': _legacy_order_total(),
+            'shipment_facts_total': total,
+            'authenticity_level': 'real_postgresql_shipment_facts',
+            'message': '统计来自真实 shipment_facts，legacy orders 仅作为显式 data_source=orders 时使用。'
+        })
+
     total = Order.query.count()
     pending = Order.query.filter(Order.status == 'pending').count()
     in_progress = Order.query.filter(Order.status == 'in_progress').count()
@@ -286,7 +367,10 @@ def get_order_stats():
         'pending': pending,
         'in_progress': in_progress,
         'completed': completed,
-        'cancelled': cancelled
+        'cancelled': cancelled,
+        'data_source': 'orders',
+        'legacy_orders_total': total,
+        'shipment_facts_total': _shipment_fact_total(),
     })
 
 

@@ -226,6 +226,7 @@ const rawNavigationGroups = [
       { index: '/advanced-route', label: '高级路径', hint: '约束强化与高级求解', icon: Cpu },
       { index: '/agile', label: '敏捷优化', hint: '快节奏方案迭代', icon: Lightning },
       { index: '/network-design', label: '网络设计', hint: '仓网布局与选址', icon: Share },
+      { index: '/cases/food-supply', label: '食品供应链案例', hint: '桃类仓配与智能调度', icon: Shop },
       { index: '/scenario-compare', label: '场景对比', hint: '情景分析与策略复盘', icon: DataAnalysis }
     ]
   },
@@ -233,6 +234,7 @@ const rawNavigationGroups = [
     key: 'insights',
     title: '洞察预警',
     items: [
+      { index: '/decision-console', label: '智能决策中枢', hint: 'Vue 原生 AI 增强融合', icon: MagicStick },
       { index: '/risk', label: '风险管理', hint: '风险画像与策略干预', icon: Warning },
       { index: '/alert', label: '预警中心', hint: '异常与告警流', icon: Bell },
       { index: '/cost', label: '成本分析', hint: '成本结构与趋势', icon: TrendCharts },
@@ -403,6 +405,8 @@ onUnmounted(() => {
 .command-sidebar {
   position: sticky;
   top: 0;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   padding: 20px 16px 18px;
   background:
@@ -424,6 +428,7 @@ onUnmounted(() => {
 }
 
 .command-sidebar__brand {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -461,7 +466,10 @@ onUnmounted(() => {
 }
 
 .command-sidebar__scroll {
-  height: calc(100vh - 110px);
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  margin-top: 14px;
   padding-right: 4px;
 }
 

@@ -66,9 +66,21 @@
                   <el-button type="primary" @click="runSolve" :loading="solving">
                     🚀 开始求解
                   </el-button>
-                  <el-button @click="loadDemoData">加载演示数据</el-button>
+                  <el-button @click="loadRealShipmentData" :loading="loadingRealData">加载真实样本</el-button>
+                  <el-button @click="loadDemoData">演示兜底</el-button>
                 </el-form-item>
               </el-form>
+
+              <el-alert
+                v-if="datasetStatus"
+                class="dataset-status"
+                :type="datasetStatus.type"
+                :closable="false"
+                show-icon
+              >
+                <template #title>{{ datasetStatus.title }}</template>
+                <div>{{ datasetStatus.message }}</div>
+              </el-alert>
             </el-card>
           </el-col>
           
@@ -385,6 +397,7 @@ const solvers = ref([])
 const solving = ref(false)
 const comparing = ref(false)
 const moOptimizing = ref(false)
+const loadingRealData = ref(false)
 
 // 图表引用
 const routeChartRef = ref(null)
@@ -393,6 +406,7 @@ const chartPalette = getChartPalette()
 
 // 演示数据
 const demoData = ref(null)
+const datasetStatus = ref(null)
 
 // 求解参数
 const solveParams = ref({
@@ -479,13 +493,55 @@ async function loadSolvers() {
   }
 }
 
+function applyDataset(data, status) {
+  demoData.value = data
+  solveParams.value.nCustomers = data.n_customers
+  solveParams.value.capacity = data.capacity || solveParams.value.capacity
+  datasetStatus.value = status
+}
+
+// 加载真实运单聚合样本
+async function loadRealShipmentData(showMessage = true) {
+  loadingRealData.value = true
+  try {
+    const res = await axios.get(`${API_BASE}/real-shipment-demo`, {
+      params: {
+        customer_limit: Math.min(Math.max(solveParams.value.nCustomers || 12, 3), 12),
+        candidate_limit: 4
+      }
+    })
+    const data = res.data
+    if (!data.success || !data.customers?.length) {
+      throw new Error(data.error || '真实运单样本为空')
+    }
+
+    applyDataset(data, {
+      type: data.authenticity_level === 'C' ? 'warning' : 'info',
+      title: `已加载真实运单样本：${data.n_customers} 个目的城市`,
+      message: `${data.source_summary || '基于 shipment_facts 城市聚合生成。'} 距离来源：${data.distance_source}，路径语义：${data.path_source}。`
+    })
+    if (showMessage) ElMessage.success('真实运单聚合样本加载成功')
+    return true
+  } catch (e) {
+    if (showMessage) {
+      ElMessage.warning('真实运单样本加载失败，将使用演示兜底: ' + (e.response?.data?.error || e.message))
+    }
+    return false
+  } finally {
+    loadingRealData.value = false
+  }
+}
+
 // 加载演示数据
-async function loadDemoData() {
+async function loadDemoData(showMessage = true) {
   try {
     const res = await axios.get(`${API_BASE}/demo`)
-    demoData.value = res.data
-    solveParams.value.nCustomers = res.data.n_customers
-    ElMessage.success('演示数据加载成功')
+    applyDataset(res.data, {
+      type: 'info',
+      title: '已加载演示兜底数据',
+      message: '当前样本为随机平面数据，只用于算法功能兜底验证，不代表真实运单网络。'
+    })
+    if (showMessage) ElMessage.success('演示数据加载成功')
   } catch (e) {
     ElMessage.error('加载演示数据失败')
   }
@@ -645,7 +701,8 @@ async function runSolve() {
   
   try {
     if (!demoData.value) {
-      await loadDemoData()
+      const loaded = await loadRealShipmentData(false)
+      if (!loaded) await loadDemoData(false)
     }
     
     const n = solveParams.value.nCustomers
@@ -655,13 +712,25 @@ async function runSolve() {
       depot: demoData.value.depot,
       capacity: solveParams.value.capacity,
       solver: solveParams.value.solver,
-      time_limit: solveParams.value.timeLimit
+      time_limit: solveParams.value.timeLimit,
+      use_precise_distance: false,
+      data_source: demoData.value.data_source,
+      distance_source: demoData.value.distance_source,
+      path_source: demoData.value.path_source
     }
     
     const res = await axios.post(`${API_BASE}/solve`, payload)
     solveResult.value = res.data
     
     if (res.data.success) {
+      solveResult.value = {
+        ...solveResult.value,
+        authenticity: demoData.value.authenticity,
+        authenticity_level: demoData.value.authenticity_level,
+        distance_source: demoData.value.distance_source,
+        path_source: demoData.value.path_source,
+        fallback_reason: demoData.value.fallback_reason
+      }
       ElMessage.success('求解成功')
       nextTick(() => drawRouteChart())
     } else {
@@ -681,7 +750,8 @@ async function runCompare() {
   
   try {
     if (!demoData.value) {
-      await loadDemoData()
+      const loaded = await loadRealShipmentData(false)
+      if (!loaded) await loadDemoData(false)
     }
     
     const n = compareParams.value.nCustomers
@@ -691,7 +761,11 @@ async function runCompare() {
       depot: demoData.value.depot,
       capacity: 50,
       solvers: compareParams.value.solvers,
-      time_limit: 30
+      time_limit: 30,
+      use_precise_distance: false,
+      data_source: demoData.value.data_source,
+      distance_source: demoData.value.distance_source,
+      path_source: demoData.value.path_source
     }
     
     const res = await axios.post(`${API_BASE}/compare`, payload)
@@ -714,7 +788,8 @@ async function runMultiObjective() {
   
   try {
     if (!demoData.value) {
-      await loadDemoData()
+      const loaded = await loadRealShipmentData(false)
+      if (!loaded) await loadDemoData(false)
     }
     
     const n = moParams.value.nCustomers
@@ -724,7 +799,11 @@ async function runMultiObjective() {
       depot: demoData.value.depot,
       capacity: 50,
       solver: moParams.value.solver,
-      n_gen: moParams.value.nGen
+      n_gen: moParams.value.nGen,
+      use_precise_distance: false,
+      data_source: demoData.value.data_source,
+      distance_source: demoData.value.distance_source,
+      path_source: demoData.value.path_source
     }
     
     const res = await axios.post(`${API_BASE}/multi-objective`, payload)
@@ -753,6 +832,9 @@ async function getRecommendation() {
 // 初始化
 onMounted(() => {
   loadSolvers()
+  loadRealShipmentData(false).then((loaded) => {
+    if (!loaded) loadDemoData(false)
+  })
 })
 </script>
 
@@ -814,6 +896,11 @@ onMounted(() => {
 
 .main-tabs {
   margin-top: 20px;
+}
+
+.dataset-status {
+  margin-top: 14px;
+  line-height: 1.6;
 }
 
 .objective-card {

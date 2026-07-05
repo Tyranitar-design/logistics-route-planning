@@ -13,10 +13,8 @@ import './assets/command-center-theme.css'
 import './assets/main.css'
 import './assets/mobile.css' // 移动端响应式样式
 
-// 初始化 WebSocket 服务
+// 暴露 WebSocket 服务给旧页面使用；实际连接由登录后的 Layout 触发。
 import { wsService } from './services/websocket'
-wsService.connect('')
-window.socketInstance = wsService.socket
 window.wsService = wsService
 
 // 过滤 Element Plus DropdownManager 调试日志

@@ -8,6 +8,7 @@ WebSocket 实时推送服务
 import threading
 import time
 import random
+import os
 from datetime import datetime
 from flask_socketio import SocketIO, emit
 from flask import current_app, request
@@ -36,6 +37,17 @@ connected_clients = set()
 
 # 后台线程标志
 running = False
+push_thread = None
+
+
+def _float_env(name, default, minimum=None):
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
 
 
 def init_socketio(app):
@@ -168,7 +180,9 @@ def background_push_thread():
     """后台推送线程"""
     global running
     running = True
-    alert_counter = 0
+    push_interval = _float_env('WEBSOCKET_PUSH_INTERVAL_SECONDS', 2.0, minimum=0.5)
+    alert_interval = _float_env('WEBSOCKET_ALERT_INTERVAL_SECONDS', 30.0, minimum=10.0)
+    last_alert_at = time.monotonic()
     
     print("[WebSocket] 后台推送线程已启动")
     
@@ -177,14 +191,13 @@ def background_push_thread():
             # 每 0.5 秒推送车辆位置
             broadcast_vehicle_positions()
             
-            # 每 30 秒生成一条随机预警
-            alert_counter += 1
-            if alert_counter >= 60:  # 30 秒
+            # 默认每 30 秒生成一条随机预警，随推送间隔自动适配。
+            if time.monotonic() - last_alert_at >= alert_interval:
                 alert = generate_random_alert()
                 broadcast_alert(alert['type'], alert['title'], alert['message'], alert['level'])
-                alert_counter = 0
+                last_alert_at = time.monotonic()
             
-            time.sleep(0.5)
+            time.sleep(push_interval)
             
         except Exception as e:
             print(f"[WebSocket] 推送异常: {e}")
@@ -193,8 +206,12 @@ def background_push_thread():
 
 def start_background_push():
     """启动后台推送"""
-    thread = threading.Thread(target=background_push_thread, daemon=True)
-    thread.start()
+    global push_thread
+    if push_thread and push_thread.is_alive():
+        print("[WebSocket] 后台推送服务已在运行")
+        return
+    push_thread = threading.Thread(target=background_push_thread, daemon=True)
+    push_thread.start()
     print("[WebSocket] 后台推送服务已启动")
 
 

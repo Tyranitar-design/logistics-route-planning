@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 
@@ -159,6 +160,30 @@ def test_shipment_prediction_baselines_return_metrics_for_phase3_targets(monkeyp
     assert result["results"]["delay"]["classification_summary"]["delay_threshold_minutes"] == 15
 
 
+def test_shipment_prediction_baselines_stream_column_projections(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from sqlalchemy.orm import Query
+
+        from app.services.shipment_prediction_service import ShipmentPredictionService
+
+        def fail_all(self):
+            raise AssertionError("baseline evaluation must not load full ORM result sets with Query.all()")
+
+        monkeypatch.setattr(Query, "all", fail_all)
+
+        result = ShipmentPredictionService().evaluate_baselines(
+            {"tasks": ["demand", "eta", "delay", "cost"], "horizon_days": 3, "limit": 100}
+        )
+
+    assert result["success"] is True
+    assert result["provider_status"] == "ok"
+    assert result["results"]["eta"]["metrics"]["sample_count"] > 0
+    assert result["results"]["delay"]["metrics"]["sample_count"] > 0
+    assert result["results"]["cost"]["metrics"]["sample_count"] > 0
+
+
 def test_shipment_prediction_feature_dataset_exposes_schema_and_targets(monkeypatch):
     app = _build_app(monkeypatch)
 
@@ -219,6 +244,99 @@ def test_shipment_prediction_time_series_benchmark_reports_dl_readiness(monkeypa
     ]
     assert result["deep_learning_readiness"]["training_windows"] == 7
     assert result["truth_contract"]["business_mutation"] == "none"
+
+
+def test_demand_forecast_explains_insufficient_daily_history_and_hourly_fallback(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from app.models import ShipmentFact, db
+        from app.services.shipment_prediction_service import ShipmentPredictionService
+
+        base = datetime(2026, 5, 1, 0, 0, 0)
+        for idx, fact in enumerate(ShipmentFact.query.order_by(ShipmentFact.id.asc())):
+            fact.shipped_at = base + timedelta(hours=idx)
+        db.session.commit()
+
+        service = ShipmentPredictionService()
+        daily = service.forecast_demand(days=3, limit=100, time_granularity="daily")
+        auto = service.forecast_demand(days=1, limit=100, time_granularity="auto")
+
+    assert daily["success"] is True
+    assert daily["provider_status"] == "degraded"
+    assert daily["forecast_status"] == "insufficient_history"
+    assert daily["forecast"] == []
+    assert daily["series_summary"]["distinct_dates"] == 1
+
+    assert auto["success"] is True
+    assert auto["provider_status"] == "degraded"
+    assert auto["forecast_status"] == "degraded"
+    assert auto["fallback_reason"] == "DEMAND_DAILY_POINTS_INSUFFICIENT_USING_HOURLY_FALLBACK"
+    assert auto["time_granularity"] == "hourly"
+    assert auto["forecast"]
+    assert auto["series_summary"]["time_bucket_points"] >= 14
+
+
+def test_prediction_timeline_audit_reports_time_field_coverage(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from app.services.shipment_prediction_service import ShipmentPredictionService
+
+        result = ShipmentPredictionService().timeline_audit({"sequence_length": 7})
+
+    assert result["success"] is True
+    assert result["audit_version"] == "shipment_timeline_audit_v1"
+    assert result["fields"]["shipped_at"]["distinct_dates"] == 14
+    assert result["time_fields"]["shipped_at"]["distinct_dates"] == 14
+    assert result["recommended"]["series_source"] == "shipped_at"
+    assert result["recommended"]["time_granularity"] == "daily"
+    assert result["recommended_granularity"] == "daily"
+    assert result["training_window_count"] == result["recommended"]["training_windows"]
+    assert result["truth_contract"]["timeline_audit"].startswith("real shipment_facts")
+
+
+def test_prediction_job_returns_quickly_and_completes_shadow_status(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from app.services.shipment_prediction_service import ShipmentPredictionService
+
+        service = ShipmentPredictionService()
+        started = time.perf_counter()
+        created = service.create_prediction_job(
+            {
+                "task": "demand",
+                "model_family": "lstm",
+                "runtime_profile": "full",
+                "limit": 100,
+                "horizon_days": 2,
+                "test_days": 2,
+                "sequence_length": 7,
+            },
+            app=app,
+        )
+        elapsed = time.perf_counter() - started
+        job_id = created["job"]["job_id"]
+
+    assert created["success"] is True
+    assert created["job_id"] == job_id
+    assert created["status"] in {"queued", "running"}
+    assert created["model_family"] == "lstm"
+    assert elapsed < 2.0
+
+    deadline = time.time() + 5
+    status = {}
+    while time.time() < deadline:
+        status = service.prediction_job_status(job_id)
+        if status.get("job", {}).get("status") in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert status["success"] is True
+    assert status["job"]["status"] == "completed"
+    assert status["job"]["result"]["model_stage"] == "deep_shadow_job"
+    assert status["job"]["result"]["training_contract"]["business_mutation"] == "none"
 
 
 def test_shipment_prediction_capacity_gap_forecast_uses_vehicle_capacity(monkeypatch):
@@ -311,6 +429,22 @@ def test_shipment_prediction_scorecard_aggregates_readiness(monkeypatch):
     assert result["truth_contract"]["business_mutation"] == "none"
 
 
+def test_shipment_prediction_scorecard_tolerates_insufficient_time_series_backtest(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from app.services.shipment_prediction_service import ShipmentPredictionService
+
+        result = ShipmentPredictionService().prediction_scorecard(
+            {"horizon_days": 4, "test_days": 3, "sequence_length": 7, "limit": 1}
+        )
+
+    assert result["success"] is True
+    assert result["provider_status"] in {"ok", "degraded"}
+    assert result["evidence"]["time_series"]["best_model"] is None
+    assert result["truth_contract"]["business_mutation"] == "none"
+
+
 def test_shipment_prediction_lightweight_model_train_and_evaluate(monkeypatch):
     app = _build_app(monkeypatch)
 
@@ -351,14 +485,17 @@ def test_ai_prediction_routes_are_available_when_legacy_ml_routes_disabled(monke
     route_rules = {rule.rule for rule in app.url_map.iter_rules()}
     assert "/api/ml/train" not in route_rules
     assert "/api/ai-prediction/health" in route_rules
+    assert "/api/ai-prediction/timeline/audit" in route_rules
+    assert "/api/ai-prediction/jobs/<job_id>" in route_rules
     assert "/api/ai-prediction/model/train" in route_rules
 
     health = client.get("/api/ai-prediction/health")
+    timeline = client.get("/api/ai-prediction/timeline/audit")
     evaluate = client.post(
         "/api/ai-prediction/baseline/evaluate",
         json={"tasks": ["demand", "eta"], "horizon_days": 2},
     )
-    forecast = client.get("/api/ai-prediction/demand/forecast?days=2&city=上海")
+    forecast = client.get("/api/ai-prediction/demand/forecast?days=2&city=上海&time_granularity=auto")
     time_series = client.post(
         "/api/ai-prediction/time-series/benchmark",
         json={"task": "demand", "horizon_days": 3, "test_days": 3, "sequence_length": 7},
@@ -393,13 +530,24 @@ def test_ai_prediction_routes_are_available_when_legacy_ml_routes_disabled(monke
         "/api/ai-prediction/model/predict",
         json={"task": "delay", "model_id": model_id, "row_limit": 2},
     )
+    clamped = client.post(
+        "/api/ai-prediction/baseline/evaluate",
+        json={
+            "tasks": ["demand"],
+            "runtime_profile": "interactive",
+            "limit": 50000,
+        },
+    )
 
     assert health.status_code == 200
     assert health.get_json()["summary"]["total_records"] == 14
+    assert timeline.status_code == 200
+    assert timeline.get_json()["fields"]["shipped_at"]["distinct_dates"] == 14
     assert evaluate.status_code == 200
     assert evaluate.get_json()["results"]["eta"]["metrics"]["sample_count"] > 0
     assert forecast.status_code == 200
     assert forecast.get_json()["task"] == "demand"
+    assert forecast.get_json()["forecast_status"] == "ok"
     assert len(forecast.get_json()["forecast"]) == 2
     assert time_series.status_code == 200
     assert time_series.get_json()["backtest"]["best_model"]["metrics"]["sample_count"] == 3
@@ -424,3 +572,6 @@ def test_ai_prediction_routes_are_available_when_legacy_ml_routes_disabled(monke
     assert len(model_evaluate.get_json()["evaluation"]["prediction_rows"]) == 2
     assert model_predict.status_code == 200
     assert model_predict.get_json()["prediction"]["mutation"] == "none"
+    assert clamped.status_code == 200
+    assert clamped.get_json()["runtime_profile"] == "interactive"
+    assert clamped.get_json()["runtime_limits"]["limit"] == 5000

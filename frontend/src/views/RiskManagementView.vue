@@ -20,6 +20,10 @@
       </div>
     </div>
 
+    <div class="truth-strip" :class="enterpriseSummary.provider_status || 'degraded'">
+      <span v-for="item in truthItems" :key="item">{{ item }}</span>
+    </div>
+
     <!-- 统计卡片 -->
     <div class="stats-row">
       <div class="stat-card" v-for="(stat, idx) in statsCards" :key="idx" :style="{borderLeftColor: stat.color}">
@@ -367,9 +371,18 @@ import {
   compareAWRPRoutes,
   getCrisisZones
 } from '@/api/risk'
+import { getEnterpriseSummary } from '@/api/analytics'
+import {
+  buildRiskModel,
+  emptyEnterpriseSummary,
+  enterpriseTruthItems,
+  normalizeEnterpriseSummary
+} from '@/utils/enterpriseSummary'
 
 // 状态
 const loading = ref(false)
+const enterpriseSummary = ref(emptyEnterpriseSummary())
+const truthItems = computed(() => enterpriseTruthItems(enterpriseSummary.value))
 
 // 卡拉杰克矩阵
 const kraljicItems = ref([])
@@ -440,37 +453,71 @@ const compareForm = reactive({
 const compareLoading = ref(false)
 const compareResult = ref(null)
 
+const applyEnterpriseRisk = (summary) => {
+  enterpriseSummary.value = normalizeEnterpriseSummary(summary)
+  const model = buildRiskModel(enterpriseSummary.value)
+  kraljicStats.value = model.kraljicStats
+  kraljicItems.value = model.kraljicItems
+  riskMatrixData.value = model.riskMatrixData
+  riskItems.value = model.riskItems
+  crisisZones.value = model.crisisZones
+}
+
 // 获取数据
 const refreshData = async () => {
   loading.value = true
   try {
-    const [dashboardRes, ordersRes, matrixRes, zonesRes] = await Promise.all([
+    const [enterpriseRes, dashboardRes, ordersRes, matrixRes, zonesRes] = await Promise.allSettled([
+      getEnterpriseSummary({
+        runtime_profile: 'interactive',
+        limit: 5000,
+        lane_limit: 20,
+        anomaly_limit: 50
+      }),
       getRiskDashboard(),
       getClassifiedOrders(),
       getRiskMatrix(),
       getCrisisZones()
     ])
-    
-    if (dashboardRes.success) {
-      kraljicStats.value = dashboardRes.kraljic_matrix?.statistics || {}
+
+    if (enterpriseRes.status === 'fulfilled') {
+      applyEnterpriseRisk(enterpriseRes.value)
+    } else {
+      applyEnterpriseRisk({
+        ...emptyEnterpriseSummary(),
+        fallback_reason: enterpriseRes.reason?.message || 'ENTERPRISE_SUMMARY_FAILED'
+      })
     }
-    
-    if (ordersRes.success) {
-      kraljicItems.value = ordersRes.items || []
+
+    const dashboardPayload = dashboardRes.status === 'fulfilled' ? dashboardRes.value : null
+    const ordersPayload = ordersRes.status === 'fulfilled' ? ordersRes.value : null
+    const matrixPayload = matrixRes.status === 'fulfilled' ? matrixRes.value : null
+    const zonesPayload = zonesRes.status === 'fulfilled' ? zonesRes.value : null
+
+    if (dashboardPayload?.success && dashboardPayload.kraljic_matrix?.statistics?.total) {
+      kraljicStats.value = dashboardPayload.kraljic_matrix.statistics
     }
-    
-    if (matrixRes.success) {
-      riskMatrixData.value = matrixRes.matrix || riskMatrixData.value
-      riskItems.value = matrixRes.items || []
+
+    if (ordersPayload?.success && ordersPayload.items?.length) {
+      kraljicItems.value = ordersPayload.items
     }
-    
-    if (zonesRes.success) {
-      crisisZones.value = zonesRes.zones || []
+
+    if (matrixPayload?.success && matrixPayload.items?.length) {
+      riskMatrixData.value = matrixPayload.matrix || riskMatrixData.value
+      riskItems.value = matrixPayload.items
     }
-    
+
+    if (zonesPayload?.success) {
+      crisisZones.value = zonesPayload.zones || []
+    }
+
     ElMessage.success('数据已刷新')
   } catch (e) {
-    ElMessage.error('数据加载失败')
+    applyEnterpriseRisk({
+      ...emptyEnterpriseSummary(),
+      fallback_reason: e.message || 'RISK_PAGE_LOAD_FAILED'
+    })
+    ElMessage.warning('风险页已切换为真实摘要降级视图')
   } finally {
     loading.value = false
   }
@@ -561,6 +608,29 @@ onMounted(() => {
   color: #fff;
   position: relative;
   overflow: hidden;
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.truth-strip span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  background: rgba(0, 212, 255, 0.08);
+  color: rgba(255,255,255,0.82);
+  font-size: 12px;
+}
+
+.truth-strip.degraded span {
+  border-color: rgba(255, 217, 61, 0.24);
+  background: rgba(255, 217, 61, 0.08);
 }
 
 /* 背景效果 */

@@ -78,6 +78,11 @@ const routes = [
         component: () => import('@/views/AnalyticsView.vue')
       },
       {
+        path: 'decision-console',
+        name: 'DecisionConsole',
+        component: () => import('@/views/DecisionConsoleView.vue')
+      },
+      {
         path: 'ml-prediction',
         name: 'MLPrediction',
         component: () => import('@/views/MLPredictionView.vue')
@@ -170,6 +175,23 @@ const routes = [
         component: () => import('@/views/OptimizationEngine.vue')
       },
       {
+        path: 'cases/food-supply',
+        component: () => import('@/views/case/FoodSupplyCaseLayout.vue'),
+        children: [
+          { path: '', name: 'CaseOverview', component: () => import('@/views/case/CaseOverview.vue') },
+          { path: 'gis', name: 'CaseGis', component: () => import('@/views/case/CaseGis.vue') },
+          { path: 'forecast', name: 'CaseForecast', component: () => import('@/views/case/CaseForecast.vue') },
+          { path: 'dispatch', name: 'CaseDispatch', component: () => import('@/views/case/CaseDispatch.vue') },
+          { path: 'multimodal', name: 'CaseMultimodal', component: () => import('@/views/case/CaseMultimodal.vue') },
+          { path: 'c2c', name: 'CaseC2c', component: () => import('@/views/case/CaseC2c.vue') },
+          { path: 'clustering', name: 'CaseClustering', component: () => import('@/views/case/CaseClustering.vue') },
+          { path: 'trace', name: 'CaseTrace', component: () => import('@/views/case/CaseTrace.vue') },
+          { path: 'scenarios', name: 'CaseScenarios', component: () => import('@/views/case/CaseScenarios.vue') },
+          { path: 'agent', name: 'CaseAgent', component: () => import('@/views/case/CaseAgent.vue') },
+          { path: 'business', name: 'CaseBusiness', component: () => import('@/views/case/CaseBusiness.vue') },
+        ]
+      },
+      {
         path: 'pareto-front',
         name: 'ParetoFront',
         component: () => import('@/views/ParetoFrontPage.vue')
@@ -199,6 +221,44 @@ router.beforeEach((to, from, next) => {
     next('/')
   } else {
     next()
+  }
+})
+
+const DYNAMIC_IMPORT_RELOAD_KEY = 'logistics_dynamic_import_reload_path'
+
+router.onError((error, to) => {
+  if (typeof window === 'undefined') return
+
+  const message = String(error?.message || error || '')
+  const isDynamicImportFailure =
+    message.includes('Failed to fetch dynamically imported module') ||
+    message.includes('Importing a module script failed') ||
+    message.includes('NetworkError when attempting to fetch resource') ||
+    message.includes('error loading dynamically imported module')
+
+  if (!isDynamicImportFailure) return
+
+  const targetPath = to?.fullPath || window.location.pathname || '/'
+  const lastReloadPath = window.sessionStorage.getItem(DYNAMIC_IMPORT_RELOAD_KEY)
+
+  if (lastReloadPath !== targetPath) {
+    window.sessionStorage.setItem(DYNAMIC_IMPORT_RELOAD_KEY, targetPath)
+    window.location.assign(targetPath)
+    return
+  }
+
+  console.error('[Router] Dynamic import still failed after one automatic reload.', {
+    targetPath,
+    message
+  })
+})
+
+router.afterEach((to) => {
+  if (typeof window === 'undefined') return
+
+  const lastReloadPath = window.sessionStorage.getItem(DYNAMIC_IMPORT_RELOAD_KEY)
+  if (lastReloadPath && lastReloadPath === to.fullPath) {
+    window.sessionStorage.removeItem(DYNAMIC_IMPORT_RELOAD_KEY)
   }
 })
 

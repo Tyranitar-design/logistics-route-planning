@@ -232,7 +232,7 @@ class ShipmentCostAnalyticsService:
             },
         }
 
-    def _query_facts(self, limit: int, city: Optional[str]) -> List[ShipmentFact]:
+    def _query_facts(self, limit: int, city: Optional[str]) -> List[Any]:
         query = ShipmentFact.query
         if city:
             query = query.filter(
@@ -241,7 +241,31 @@ class ShipmentCostAnalyticsService:
                     ShipmentFact.destination_city_std == city,
                 )
             )
-        return query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
+        rows = (
+            query.with_entities(*self._fact_projection_columns())
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
+        return list(self._iter_query(rows))
+
+    def _fact_projection_columns(self):
+        return (
+            ShipmentFact.id,
+            ShipmentFact.origin_city_std,
+            ShipmentFact.destination_city_std,
+            ShipmentFact.freight,
+            ShipmentFact.standard_status,
+            ShipmentFact.exception_reason,
+            ShipmentFact.shipped_at,
+            ShipmentFact.eta_at,
+            ShipmentFact.delivered_at,
+            ShipmentFact.signed_at,
+            ShipmentFact.weight_kg,
+            ShipmentFact.volume_m3,
+        )
+
+    def _iter_query(self, query, chunk_size: int = 1000):
+        return query.yield_per(chunk_size)
 
     def _kpis(self, facts: Sequence[ShipmentFact]) -> Dict[str, Any]:
         freight_values = [self._positive_float(fact.freight) for fact in facts]

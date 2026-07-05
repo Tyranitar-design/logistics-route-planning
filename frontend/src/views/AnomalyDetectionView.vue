@@ -20,6 +20,9 @@
         <el-button type="primary" @click="runDetection" :loading="detecting">
           <el-icon><Refresh /></el-icon> 立即检测
         </el-button>
+        <el-button type="warning" @click="runDeepDetection" :loading="deepDetecting">
+          <el-icon><Refresh /></el-icon> 深度检测
+        </el-button>
       </div>
     </div>
 
@@ -74,9 +77,9 @@
         </div>
 
         <div class="anomaly-list" v-if="anomalies.length > 0">
-          <div 
-            v-for="(anomaly, index) in anomalies" 
-            :key="anomaly.id" 
+          <div
+            v-for="(anomaly, index) in anomalies"
+            :key="anomaly.id || index"
             class="anomaly-item"
             :class="anomaly.level"
           >
@@ -229,10 +232,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Refresh, Location, TrendCharts, Clock } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
-import { getAnomalyDashboard, runFullDetection } from '@/api/anomaly'
+import { detectShipmentAnomalies, getAiAnomalyScorecard } from '@/api/aiAnomaly'
 
 // 状态
 const detecting = ref(false)
+const deepDetecting = ref(false)
 const healthScore = ref(100)
 const lastCheckTime = ref('-')
 const anomalies = ref([])
@@ -287,7 +291,15 @@ const getTypeIcon = (type) => {
     cost_spike: '💰',
     route_deviation: '🗺️',
     weather_impact: '🌧️',
-    vehicle_fault: '🚗'
+    vehicle_fault: '🚗',
+    status: '📦',
+    geo: '🗺️',
+    cost: '💰',
+    eta: '⏱️',
+    delay: '⏱️',
+    od_volume: '📊',
+    node_congestion: '🏬',
+    ml: '🤖'
   }
   return icons[type] || '⚠️'
 }
@@ -299,7 +311,15 @@ const getTypeLabel = (type) => {
     cost_spike: '成本飙升',
     route_deviation: '路线偏离',
     weather_impact: '天气影响',
-    vehicle_fault: '车辆故障'
+    vehicle_fault: '车辆故障',
+    status: '状态异常',
+    geo: '坐标异常',
+    cost: '成本异常',
+    eta: '时效异常',
+    delay: '延误异常',
+    od_volume: 'OD 波动',
+    node_congestion: '节点拥堵',
+    ml: 'ML Shadow'
   }
   return labels[type] || type
 }
@@ -351,119 +371,90 @@ const formatTime = (time) => {
 }
 
 // 运行检测
-const runDetection = async () => {
-  detecting.value = true
+const runDetection = async (options = {}) => {
+  const isFull = options.runtime_profile === 'full'
+  if (isFull) {
+    deepDetecting.value = true
+  } else {
+    detecting.value = true
+  }
   try {
-    const res = await runFullDetection()
+    const [res, scorecard] = await Promise.all([
+      detectShipmentAnomalies({
+        runtime_profile: isFull ? 'full' : 'interactive',
+        limit: isFull ? 50000 : 5000,
+        anomaly_limit: isFull ? 160 : 40,
+        use_ml: isFull
+      }),
+      getAiAnomalyScorecard({
+        runtime_profile: isFull ? 'full' : 'interactive',
+        limit: isFull ? 50000 : 5000,
+        anomaly_limit: isFull ? 160 : 80,
+        use_ml: isFull
+      })
+    ])
     if (res.success) {
-      summary.value = res.summary
-      anomalies.value = res.anomalies || []
-      healthScore.value = res.health_score || 100
-      recommendations.value = res.recommendations || []
+      summary.value = normalizeSummary(res.summary)
+      anomalies.value = (res.anomalies || []).map(normalizeAnomaly)
+      healthScore.value = Math.round(scorecard.summary?.readiness_score ?? Math.max(0, 100 - (summary.value.total_anomalies || 0)))
+      recommendations.value = scorecard.recommendations || []
       lastCheckTime.value = new Date().toLocaleTimeString('zh-CN')
       
-      if (res.summary.total_anomalies > 0) {
+      if (summary.value.total_anomalies > 0) {
         ElNotification({
-          title: '🚨 异常检测完成',
-          message: `发现 ${res.summary.total_anomalies} 个异常事件`,
+          title: isFull ? '深度检测完成' : '异常检测完成',
+          message: `发现 ${summary.value.total_anomalies} 个真实 shipment_facts 异常信号`,
           type: 'warning'
         })
       } else {
-        ElMessage.success('检测完成，系统运行正常')
+        ElMessage.success(isFull ? '深度检测完成，暂未发现高风险异常' : '检测完成，系统运行正常')
       }
     }
   } catch (e) {
     console.error('检测失败:', e)
-    // 使用模拟数据
-    loadMockData()
+    ElMessage.error(friendlyError(e, 'AI 异常检测接口失败，请检查 /api/ai-anomaly 后端链路'))
   } finally {
     detecting.value = false
+    deepDetecting.value = false
   }
 }
 
-// 加载模拟数据
-const loadMockData = () => {
-  summary.value = {
-    total_anomalies: 5,
-    by_type: {
-      order_timeout: 2,
-      cost_spike: 1,
-      route_deviation: 1,
-      weather_impact: 1,
-      vehicle_fault: 0
-    },
+const runDeepDetection = () => runDetection({ runtime_profile: 'full' })
+
+const friendlyError = (error, fallback) => {
+  if (error?.code === 'ECONNABORTED' || String(error?.message || '').includes('timeout')) {
+    return '异常检测超时：请先使用轻量检测，深度检测可稍后重试'
+  }
+  if (!error?.response) return '后端不可达：请确认 Flask 服务已启动'
+  return error.response.data?.fallback_reason || error.response.data?.error || fallback
+}
+
+const normalizeSummary = (raw = {}) => {
+  return {
+    total_anomalies: raw.anomaly_count || raw.total_anomalies || 0,
+    by_type: raw.by_type || {},
     by_level: {
-      critical: 1,
-      high: 2,
-      medium: 2,
-      low: 0
+      critical: raw.by_level?.critical || 0,
+      high: raw.by_level?.high || 0,
+      medium: raw.by_level?.medium || 0,
+      low: raw.by_level?.low || 0
     }
   }
-  
-  anomalies.value = [
-    {
-      id: 'order_timeout_1',
-      type: 'order_timeout',
-      level: 'critical',
-      title: '订单超时预警',
-      message: '订单 ORD1001 已超时 52.5 小时',
-      source: 'order',
-      deviation: 9.4,
-      detected_at: new Date().toISOString(),
-      actions: ['立即处理', '联系客户', '加急配送']
-    },
-    {
-      id: 'cost_spike_2',
-      type: 'cost_spike',
-      level: 'high',
-      title: '成本异常飙升',
-      message: '订单 ORD1002 成本 ¥850，超出均值 65%',
-      source: 'order',
-      deviation: 65,
-      detected_at: new Date().toISOString(),
-      actions: ['审核成本', '检查路线']
-    },
-    {
-      id: 'route_deviation_3',
-      type: 'route_deviation',
-      level: 'medium',
-      title: '路线偏离预警',
-      message: '车辆 京A12345 偏离计划路线 35%',
-      source: 'vehicle',
-      deviation: 35,
-      detected_at: new Date().toISOString(),
-      actions: ['联系司机', '重新规划']
-    },
-    {
-      id: 'weather_4',
-      type: 'weather_impact',
-      level: 'high',
-      title: '天气影响预警 - 上海',
-      message: '上海 地区天气 heavy_rain，预计延迟 80%',
-      source: 'weather',
-      deviation: 80,
-      detected_at: new Date().toISOString(),
-      actions: ['暂停配送', '调整路线']
-    },
-    {
-      id: 'order_timeout_5',
-      type: 'order_timeout',
-      level: 'medium',
-      title: '订单超时预警',
-      message: '订单 ORD1003 已超时 15.2 小时',
-      source: 'order',
-      deviation: 26.7,
-      detected_at: new Date().toISOString(),
-      actions: ['联系客户', '加急处理']
-    }
-  ]
-  
-  healthScore.value = 75
-  recommendations.value = [
-    '⚠️ 订单超时较多，建议检查调度效率或增加运力',
-    '🌧️ 天气影响预警，建议调整配送计划'
-  ]
-  lastCheckTime.value = new Date().toLocaleTimeString('zh-CN')
+}
+
+const normalizeAnomaly = (item = {}) => {
+  const type = item.anomaly_type || item.type || 'unknown'
+  return {
+    id: item.anomaly_id || item.id || `${type}_${item.source_id || item.shipment_id || Math.random()}`,
+    type,
+    level: item.level || 'medium',
+    title: item.title || getTypeLabel(type),
+    message: item.explanation || item.message || item.reason || '真实异常信号已返回，但暂无详细解释。',
+    source: item.source_id || item.shipment_id || item.order_id || item.data_source || 'shipment_fact',
+    deviation: Number(item.deviation ?? item.z_score ?? item.score ?? item.risk_score ?? 0).toFixed(1),
+    detected_at: item.detected_at || item.created_at || new Date().toISOString(),
+    actions: item.actions || ['人工复核', '查看订单', '调度评估']
+  }
 }
 
 // 处理操作

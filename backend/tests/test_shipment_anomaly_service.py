@@ -242,6 +242,34 @@ def test_shipment_anomaly_detection_explains_real_fact_outliers(monkeypatch):
     assert all(item["actions"] for item in result["anomalies"])
 
 
+def test_shipment_anomaly_detection_streams_column_projections(monkeypatch):
+    app = _build_app(monkeypatch)
+
+    with app.app_context():
+        from sqlalchemy.orm import Query
+
+        from app.services.shipment_anomaly_service import ShipmentAnomalyService
+
+        def fail_all(self):
+            raise AssertionError("anomaly detection must not load full ORM result sets with Query.all()")
+
+        monkeypatch.setattr(Query, "all", fail_all)
+
+        result = ShipmentAnomalyService().detect(
+            {
+                "tasks": ["status", "geo", "cost", "eta", "delay"],
+                "limit": 100,
+                "anomaly_limit": 20,
+                "use_ml": False,
+                "z_threshold": 3.0,
+            }
+        )
+
+    assert result["success"] is True
+    assert result["summary"]["records_scanned"] == 18
+    assert result["summary"]["anomaly_count"] >= 5
+
+
 def test_shipment_anomaly_scorecard_aggregates_readiness(monkeypatch):
     app = _build_app(monkeypatch)
 
@@ -312,6 +340,16 @@ def test_ai_anomaly_routes_and_explain_are_available(monkeypatch):
             "z_threshold": 3.0,
         },
     )
+    clamped = client.post(
+        "/api/ai-anomaly/detect",
+        json={
+            "runtime_profile": "interactive",
+            "tasks": ["status", "ml"],
+            "limit": 50000,
+            "anomaly_limit": 500,
+            "use_ml": True,
+        },
+    )
     explain = client.get("/api/ai-anomaly/explain?order_id=ORD-ANOM-COST")
     missing = client.get("/api/ai-anomaly/explain?order_id=NO-SUCH-ORDER")
 
@@ -322,6 +360,11 @@ def test_ai_anomaly_routes_and_explain_are_available(monkeypatch):
     assert scorecard.status_code == 200
     assert scorecard.get_json()["summary"]["readiness_score"] > 0
     assert scorecard.get_json()["truth_contract"]["business_mutation"] == "none"
+    assert clamped.status_code == 200
+    assert clamped.get_json()["runtime_profile"] == "interactive"
+    assert clamped.get_json()["runtime_limits"]["limit"] == 5000
+    assert clamped.get_json()["runtime_limits"]["anomaly_limit"] == 80
+    assert clamped.get_json()["runtime_limits"]["use_ml"] is False
     assert explain.status_code == 200
     assert explain.get_json()["query"] == "ORD-ANOM-COST"
     assert explain.get_json()["anomaly_count"] >= 1

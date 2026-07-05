@@ -6,14 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>物流路径规划系统</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <!-- 高德地图安全密钥配置 -->
-    <script type="text/javascript">
-      window._AMapSecurityConfig = {
-        securityJsCode: '255f4b34ce5f7feb9506f81b4613146e',
+    <!-- 高德地图 JS API：通过 .env.local / .env.development 注入，不在仓库硬编码真实 key。 -->
+    <script type="module">
+      const amapSecurityKey = import.meta.env.VITE_AMAP_SECURITY_KEY
+      const amapKey = import.meta.env.VITE_AMAP_KEY
+      if (amapSecurityKey) {
+        window._AMapSecurityConfig = { securityJsCode: amapSecurityKey }
+      }
+      if (amapKey) {
+        const script = document.createElement('script')
+        script.type = 'text/javascript'
+        script.async = false
+        script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}`
+        document.head.appendChild(script)
+      } else {
+        console.info('[AMap] VITE_AMAP_KEY is not configured; browser map provider will rely on backend/provider fallbacks.')
       }
     </script>
-    <!-- 高德地图 JS API -->
-    <script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=e03be4e94a344d17dae3488c922a2b6e"></script>
   </head>
   <body>
     <div id="app"></div>

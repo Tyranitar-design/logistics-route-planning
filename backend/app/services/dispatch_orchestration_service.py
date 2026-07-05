@@ -267,6 +267,7 @@ class DispatchOrchestrationService:
             "candidate_orders": len(orders),
             "available_vehicles": len(vehicles),
         }
+        self._attach_policy_shadow_contract(result, payload)
 
         if persist:
             scenario = self._persist_scenario(result, payload, user_id=user_id, status="preview")
@@ -386,6 +387,144 @@ class DispatchOrchestrationService:
             "results": comparisons,
             "best_solver": best["solver"] if best else None,
             "note": "OR-Tools/ALNS use availability metadata in this phase; production assignment remains constraint-safe greedy wave unless the solver is integrated for this data shape.",
+        }
+
+    def _attach_policy_shadow_contract(self, result: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        policy_mode = self._normalise_policy_mode(payload.get("policy_mode"))
+        plans = list(result.get("plans") or [])
+        validation = self._validate_dispatch_plan_constraints(plans)
+        solver_plan = {
+            "solver": result.get("solver"),
+            "requested_solver": result.get("requested_solver"),
+            "summary": result.get("summary") or {},
+            "plan_count": len(plans),
+            "assigned_orders": (result.get("summary") or {}).get("assigned_orders", 0),
+            "unassigned_orders": (result.get("summary") or {}).get("unassigned_orders", 0),
+            "deployable": bool(validation.get("passed")),
+            "hard_constraints_owner": "dispatch solver layer",
+        }
+        rerank = self._build_policy_rerank(plans, policy_mode, validation)
+
+        result["policy_mode"] = policy_mode
+        result["solver_plan"] = solver_plan
+        result["rl_rerank"] = rerank
+        result["constraint_validation"] = validation
+        result["deployable"] = bool(validation.get("passed")) and policy_mode == "solver_only"
+        result.setdefault("ai_shadow", {})
+        result["ai_shadow"].update(
+            {
+                "policy_mode": policy_mode,
+                "deployable": False,
+                "hard_constraints_owner": "dispatch solver layer",
+                "boundary": "DQN/PPO/Fitted-Q can score or rerank candidates only; solver validation remains mandatory",
+            }
+        )
+        if result.get("summary") is not None:
+            result["summary"]["policy_mode"] = policy_mode
+            result["summary"]["constraint_validation_passed"] = bool(validation.get("passed"))
+            result["summary"]["ai_policy_deployable"] = False
+
+    def _normalise_policy_mode(self, value: Any) -> str:
+        text = str(value or "solver_only").strip().lower()
+        return text if text in {"solver_only", "shadow_rerank", "dqn_shadow"} else "solver_only"
+
+    def _validate_dispatch_plan_constraints(self, plans: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        order_refs: List[str] = []
+        violations: List[Dict[str, Any]] = []
+        for plan in plans:
+            vehicle = plan.get("vehicle_info") or {}
+            capacity_weight_kg = float(vehicle.get("capacity_weight", 0) or vehicle.get("load_capacity", 0) or 0) * 1000.0
+            capacity_volume = float(vehicle.get("capacity_volume", 0) or vehicle.get("volume_capacity", 0) or 0)
+            total_weight = sum(float(order.get("weight_kg", 0) or 0) for order in plan.get("orders") or [])
+            total_volume = sum(float(order.get("volume_m3", 0) or order.get("volume", 0) or 0) for order in plan.get("orders") or [])
+            if capacity_weight_kg > 0 and total_weight > capacity_weight_kg + 1e-6:
+                violations.append({
+                    "type": "capacity_weight_exceeded",
+                    "vehicle_id": plan.get("vehicle_id"),
+                    "total_weight_kg": round(total_weight, 3),
+                    "capacity_weight_kg": round(capacity_weight_kg, 3),
+                })
+            if capacity_volume > 0 and total_volume > capacity_volume + 1e-6:
+                violations.append({
+                    "type": "capacity_volume_exceeded",
+                    "vehicle_id": plan.get("vehicle_id"),
+                    "total_volume_m3": round(total_volume, 3),
+                    "capacity_volume_m3": round(capacity_volume, 3),
+                })
+            for order in plan.get("orders") or []:
+                order_refs.append(str(order.get("ref") or order.get("id") or order.get("order_number")))
+
+        duplicates = sorted([ref for ref, count in Counter(order_refs).items() if count > 1])
+        for ref in duplicates:
+            violations.append({"type": "duplicate_order_assignment", "order_ref": ref})
+
+        return {
+            "passed": not violations,
+            "hard_constraints": [
+                "order_unique_assignment",
+                "vehicle_weight_capacity",
+                "vehicle_volume_capacity",
+            ],
+            "assigned_order_count": len(order_refs),
+            "duplicate_order_refs": duplicates,
+            "violation_count": len(violations),
+            "violations": violations,
+            "validator_version": "dispatch_constraint_validation_v1",
+        }
+
+    def _build_policy_rerank(
+        self,
+        plans: Sequence[Dict[str, Any]],
+        policy_mode: str,
+        validation: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        candidates = []
+        for index, plan in enumerate(plans):
+            load = float(plan.get("load_utilization") or 0.0)
+            volume = float(plan.get("volume_utilization") or 0.0)
+            cost = float(plan.get("total_cost") or 0.0)
+            duration = float(plan.get("total_duration") or 0.0)
+            if policy_mode == "dqn_shadow":
+                policy_score = load * 45.0 + volume * 20.0 - cost * 0.01 - duration * 0.02
+                policy_id = "dqn_shadow_q_score_v0"
+            elif policy_mode == "shadow_rerank":
+                policy_score = load * 35.0 + volume * 25.0 + float(plan.get("score") or 0.0) * 0.4
+                policy_id = "balanced_shadow_rerank_v1"
+            else:
+                policy_score = float(plan.get("score") or 0.0)
+                policy_id = "solver_order"
+            candidates.append({
+                "rank": index + 1,
+                "vehicle_id": plan.get("vehicle_id"),
+                "order_count": len(plan.get("orders") or []),
+                "solver_score": plan.get("score"),
+                "policy_score": round(policy_score, 4),
+                "policy_id": policy_id,
+                "load_utilization": plan.get("load_utilization"),
+                "volume_utilization": plan.get("volume_utilization"),
+            })
+
+        reranked = sorted(candidates, key=lambda item: item["policy_score"], reverse=True)
+        for index, item in enumerate(reranked, start=1):
+            item["shadow_rank"] = index
+        return {
+            "success": True,
+            "mode": policy_mode,
+            "provider_status": "ok" if validation.get("passed") else "degraded",
+            "deployable": False,
+            "policy_family": "solver_only" if policy_mode == "solver_only" else "dispatch_rl_shadow_rerank",
+            "candidate_count": len(candidates),
+            "candidates": reranked,
+            "recommendations": [
+                "AI shadow rerank is advisory only; apply must keep solver-backed constraints.",
+            ] if policy_mode != "solver_only" else [
+                "当前为 solver_only，AI shadow 仅展示边界信息。",
+            ],
+            "truth_contract": {
+                "mutation": "none",
+                "deployable": False,
+                "hard_constraints_owner": "dispatch solver layer",
+            },
         }
 
     def _solve_wave(

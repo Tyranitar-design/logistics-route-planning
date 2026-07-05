@@ -57,6 +57,7 @@ services:
       TIANAPI_KEY: ${TIANAPI_KEY:-}
       TIANDITU_BROWSER_KEY: ${TIANDITU_BROWSER_KEY:-}
       TIANDITU_SERVER_KEY: ${TIANDITU_SERVER_KEY:-}
+      FOOD_SUPPLY_CASE_DIR: /app/cases/food-supply
     ports:
       - "5000:5000"
     extra_hosts:
@@ -64,6 +65,7 @@ services:
       - "restapi.amap.com:${AMAP_RESTAPI_IPV4:-59.82.14.114}"
     volumes:
       - ./logs:/app/logs
+      - ./案例一：食品供应链仓配优化(1):/app/cases/food-supply:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +85,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_AMAP_KEY: ${VITE_AMAP_KEY:-}
+        VITE_AMAP_SECURITY_KEY: ${VITE_AMAP_SECURITY_KEY:-}
     container_name: logistics-frontend
     ports:
       - "8080:80"

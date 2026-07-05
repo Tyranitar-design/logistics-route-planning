@@ -67,9 +67,16 @@
 
             <el-form-item>
               <el-radio-group v-model="config.dataSource">
+                <el-radio label="shipment_facts">真实运单</el-radio>
                 <el-radio label="test">测试数据</el-radio>
                 <el-radio label="sync">同步节点</el-radio>
               </el-radio-group>
+            </el-form-item>
+
+            <el-form-item v-if="config.dataSource === 'shipment_facts'">
+              <el-button type="primary" @click="loadShipmentFactDataset" :loading="loadingShipmentFacts">
+                加载真实运单网络
+              </el-button>
             </el-form-item>
 
             <el-form-item v-if="config.dataSource === 'test'">
@@ -471,7 +478,7 @@ const config = reactive({
     distance: 0.4,
     balance: 0.2
   },
-  dataSource: 'test'
+  dataSource: 'shipment_facts'
 })
 
 // 数据
@@ -481,6 +488,7 @@ const result = ref(null)
 const dataTruth = ref(null)
 const generating = ref(false)
 const syncing = ref(false)
+const loadingShipmentFacts = ref(false)
 const solving = ref(false)
 const showHelp = ref(false)
 const viewMode = ref('2d')
@@ -514,6 +522,21 @@ const activeTruthMeta = computed(() => {
   if (dataTruth.value) return buildNetworkTruthMeta(dataTruth.value)
   return null
 })
+
+function applyNetworkDataset(data, successMessage) {
+  customers.value = data.customers || []
+  candidates.value = data.candidates || []
+  dataTruth.value = extractTruthFields(data, {
+    distance_source: 'haversine_corrected',
+    path_source: 'shipment_fact_city_od_aggregate',
+    authenticity_level: 'C',
+    fallback_reason: 'coordinate_city_aggregate_not_navigation_path'
+  })
+  config.numCustomers = customers.value.length || config.numCustomers
+  config.numCandidates = candidates.value.length || config.numCandidates
+  if (data.max_facilities) config.numFacilities = Math.min(data.max_facilities, config.numFacilities)
+  ElMessage.success(successMessage)
+}
 
 function getCustomerSymbolSize(demand) {
   const numericDemand = Number(demand || 0)
@@ -1378,6 +1401,48 @@ async function deleteScenario(scenarioId) {
   }
 }
 
+// 从真实 shipment_facts 聚合始发/目的城市网络
+async function loadShipmentFactDataset(showMessage = true) {
+  loadingShipmentFacts.value = true
+  result.value = null
+
+  try {
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(
+      `${apiBase.value}/api/network/real-shipment-dataset?` +
+        new URLSearchParams({
+          customer_limit: String(Math.min(Math.max(config.numCustomers || 12, 3), 12)),
+          candidate_limit: String(Math.min(Math.max(config.numCandidates || 6, 1), 8)),
+          transport_cost_per_km: String(config.transportCostPerKm || 2.0),
+          max_facilities: String(config.numFacilities || 3)
+        }),
+      {
+        headers: { 'Authorization': `Bearer ${token}` }
+      }
+    )
+    const data = await response.json()
+
+    if (response.ok && data.status === 'success' && data.customers?.length && data.candidates?.length) {
+      applyNetworkDataset(
+        data,
+        `已加载 ${data.customers.length} 个目的城市和 ${data.candidates.length} 个始发候选设施`
+      )
+      await nextTick()
+      renderChart()
+      return true
+    }
+
+    throw new Error(data.message || data.error || '真实运单网络数据为空')
+  } catch (error) {
+    if (showMessage) {
+      ElMessage.warning('真实运单网络加载失败，将使用兜底数据: ' + error.message)
+    }
+    return false
+  } finally {
+    loadingShipmentFacts.value = false
+  }
+}
+
 function extractTruthFields(source = {}, defaults = {}) {
   return {
     distance_source: source.distance_source || defaults.distance_source,
@@ -1403,7 +1468,16 @@ onMounted(async () => {
   }
   
   // 根据数据来源初始化
-  if (config.dataSource === 'test') {
+  if (config.dataSource === 'shipment_facts') {
+    const loaded = await loadShipmentFactDataset(false)
+    if (!loaded) {
+      await syncFromNodes()
+      if (customers.value.length === 0 || candidates.value.length === 0) {
+        config.dataSource = 'test'
+        await generateData()
+      }
+    }
+  } else if (config.dataSource === 'test') {
     await generateData()
   } else {
     // 同步模式下尝试同步，失败则生成测试数据

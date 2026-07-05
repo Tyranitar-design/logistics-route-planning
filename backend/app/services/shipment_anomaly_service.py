@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
-from app.models import ShipmentFact
+from app.models import ShipmentFact, db
 
 
 DEFAULT_ANOMALY_TASKS = ("status", "geo", "cost", "eta", "delay", "od_volume")
@@ -431,7 +431,7 @@ class ShipmentAnomalyService:
             "truth_contract": self._truth_contract(),
         }
 
-    def _query_facts(self, limit: int, city: Optional[str] = None) -> List[ShipmentFact]:
+    def _query_facts(self, limit: int, city: Optional[str] = None) -> List[Any]:
         query = ShipmentFact.query
         if city:
             query = query.filter(
@@ -440,9 +440,42 @@ class ShipmentAnomalyService:
                     ShipmentFact.destination_city_std == city,
                 )
             )
-        return query.order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc()).limit(limit).all()
+        rows = (
+            query.with_entities(*self._fact_projection_columns())
+            .order_by(ShipmentFact.shipped_at.asc(), ShipmentFact.id.asc())
+            .limit(limit)
+        )
+        return list(self._iter_query(rows))
 
-    def _record_from_fact(self, fact: ShipmentFact) -> ShipmentAnomalyRecord:
+    def _fact_projection_columns(self):
+        return (
+            ShipmentFact.id,
+            ShipmentFact.external_shipment_id,
+            ShipmentFact.external_order_id,
+            ShipmentFact.origin_city_std,
+            ShipmentFact.destination_city_std,
+            ShipmentFact.origin_lng,
+            ShipmentFact.origin_lat,
+            ShipmentFact.destination_lng,
+            ShipmentFact.destination_lat,
+            ShipmentFact.geo_status,
+            ShipmentFact.cargo_type,
+            ShipmentFact.transport_mode,
+            ShipmentFact.freight,
+            ShipmentFact.standard_status,
+            ShipmentFact.exception_reason,
+            ShipmentFact.shipped_at,
+            ShipmentFact.eta_at,
+            ShipmentFact.delivered_at,
+            ShipmentFact.signed_at,
+            ShipmentFact.weight_kg,
+            ShipmentFact.volume_m3,
+        )
+
+    def _iter_query(self, query, chunk_size: int = 1000):
+        return query.yield_per(chunk_size)
+
+    def _record_from_fact(self, fact: Any) -> ShipmentAnomalyRecord:
         origin = self._clean_text(fact.origin_city_std) or "unknown_origin"
         destination = self._clean_text(fact.destination_city_std) or "unknown_destination"
         mode = self._clean_text(fact.transport_mode) or "unknown_mode"
@@ -1123,12 +1156,12 @@ class ShipmentAnomalyService:
         return fact.delivered_at or fact.signed_at
 
     def _status_counts(self) -> Dict[str, int]:
-        rows = ShipmentFact.query.with_entities(ShipmentFact.standard_status).all()
-        result: Dict[str, int] = {}
-        for row in rows:
-            status = str(row[0] or "unknown")
-            result[status] = result.get(status, 0) + 1
-        return result
+        rows = (
+            db.session.query(ShipmentFact.standard_status, func.count(ShipmentFact.id))
+            .group_by(ShipmentFact.standard_status)
+            .all()
+        )
+        return {str(status or "unknown"): int(count or 0) for status, count in rows}
 
     def _truth_contract(self) -> Dict[str, Any]:
         return {

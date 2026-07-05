@@ -191,3 +191,108 @@ def test_network_design_endpoint_returns_demo_payload(monkeypatch):
     assert payload["success"] is True
     assert payload["solver"] == "greedy_facility_capacity_fallback"
     assert payload["path_source"] == "facility_customer_assignment"
+
+
+def test_optimization_real_shipment_demo_projects_real_dataset(monkeypatch):
+    monkeypatch.setenv("DISABLE_ML_ROUTES", "1")
+
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            sys.modules.pop(module_name)
+
+    from flask import Flask
+    import app.routes.optimization as optimization_routes
+
+    class FakeNetworkDesignService:
+        def database_dataset_payload(self, payload):
+            return {
+                "success": True,
+                "status": "success",
+                "customers": [
+                    {"id": "C-1", "name": "上海", "demand": 12.0, "lat": 31.23, "lon": 121.47},
+                    {"id": "C-2", "name": "深圳", "demand": 8.0, "lat": 22.54, "lon": 114.05},
+                ],
+                "candidates": [
+                    {"id": "F-1", "name": "广州", "capacity": 30.0, "fixed_cost": 32000, "lat": 23.13, "lon": 113.26}
+                ],
+                "data_source": "shipment_fact_od_aggregate",
+                "distance_source": "haversine_corrected",
+                "path_source": "shipment_fact_city_od_aggregate",
+                "authenticity_level": "C",
+                "fallback_reason": "coordinate_city_aggregate_not_navigation_path",
+                "summary": {"shipment_facts_total": 50000},
+            }
+
+    monkeypatch.setattr(
+        optimization_routes,
+        "get_gurobi_network_design_service",
+        lambda: FakeNetworkDesignService(),
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(optimization_routes.optimization_bp, url_prefix="/api/optimization")
+    client = app.test_client()
+
+    response = client.get("/api/optimization/real-shipment-demo?customer_limit=8")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["n_customers"] == 2
+    assert payload["geo_customers"][0]["name"] == "上海"
+    assert payload["authenticity_level"] == "C"
+    assert payload["distance_source"] == "projected_coordinate_plane"
+    assert payload["summary"]["shipment_facts_total"] == 50000
+
+
+def test_network_real_shipment_dataset_endpoint_returns_service_payload(monkeypatch):
+    monkeypatch.setenv("DISABLE_ML_ROUTES", "1")
+
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            sys.modules.pop(module_name)
+
+    from flask import Flask
+    from flask_jwt_extended import JWTManager, create_access_token
+    import app.routes.network as network_routes
+
+    class FakeNetworkDesignService:
+        def database_dataset_payload(self, payload):
+            return {
+                "success": True,
+                "status": "success",
+                "customers": [{"id": "C-1", "name": "上海", "demand": 12.0, "lat": 31.23, "lon": 121.47}],
+                "candidates": [{"id": "F-1", "name": "广州", "capacity": 30.0, "fixed_cost": 32000, "lat": 23.13, "lon": 113.26}],
+                "data_source": "shipment_fact_od_aggregate",
+                "distance_source": "haversine_corrected",
+                "path_source": "shipment_fact_city_od_aggregate",
+                "authenticity_level": "C",
+                "fallback_reason": "coordinate_city_aggregate_not_navigation_path",
+                "summary": {"shipment_facts_total": 50000},
+            }
+
+    monkeypatch.setattr(
+        network_routes,
+        "get_gurobi_network_design_service",
+        lambda: FakeNetworkDesignService(),
+    )
+
+    app = Flask(__name__)
+    app.config["JWT_SECRET_KEY"] = "test-secret"
+    JWTManager(app)
+    app.register_blueprint(network_routes.network_bp, url_prefix="/api/network")
+    with app.app_context():
+        token = create_access_token(identity="1")
+    client = app.test_client()
+
+    response = client.get(
+        "/api/network/real-shipment-dataset?customer_limit=8&candidate_limit=4",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "success"
+    assert payload["provider_status"] == "ok"
+    assert payload["data_source"] == "shipment_fact_od_aggregate"
+    assert payload["summary"]["shipment_facts_total"] == 50000

@@ -7,7 +7,7 @@ Flask配置文件
 import os
 from datetime import timedelta
 
-# 加载 .env 文件
+# 加载 .env 文件。.env.local 由 run.py 在本机启动时加载，避免测试环境误读真实 key。
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -18,6 +18,58 @@ def _first_env(*names, default=''):
         if value is not None and str(value).strip():
             return str(value).strip()
     return default
+
+
+def _int_env(name, default, minimum=None, maximum=None):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _bool_env(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _engine_options_for(database_uri):
+    options = {
+        'pool_pre_ping': True,
+    }
+    if str(database_uri or '').startswith(('postgresql://', 'postgresql+')):
+        options.update({
+            'pool_size': _int_env('SQLALCHEMY_POOL_SIZE', 10, minimum=1, maximum=50),
+            'max_overflow': _int_env('SQLALCHEMY_MAX_OVERFLOW', 20, minimum=0, maximum=100),
+            'pool_timeout': _int_env('SQLALCHEMY_POOL_TIMEOUT', 15, minimum=1, maximum=120),
+            'pool_recycle': _int_env('SQLALCHEMY_POOL_RECYCLE', 1800, minimum=60),
+        })
+        connect_args = {
+            'connect_timeout': _int_env('POSTGRES_CONNECT_TIMEOUT', 10, minimum=1, maximum=60),
+        }
+        statement_timeout_ms = _int_env('POSTGRES_STATEMENT_TIMEOUT_MS', 120000, minimum=0)
+        idle_timeout_ms = _int_env('POSTGRES_IDLE_TX_TIMEOUT_MS', 120000, minimum=0)
+        pg_options = []
+        if statement_timeout_ms:
+            pg_options.append(f'-c statement_timeout={statement_timeout_ms}')
+        if idle_timeout_ms:
+            pg_options.append(f'-c idle_in_transaction_session_timeout={idle_timeout_ms}')
+        if pg_options:
+            connect_args['options'] = ' '.join(pg_options)
+        options['connect_args'] = connect_args
+    return options
+
+
+def _sqlite_uri_for_path(path):
+    """Build a SQLAlchemy SQLite URI that works with Windows drive letters."""
+    normalized = os.path.abspath(path).replace('\\', '/')
+    return f'sqlite:///{normalized}'
 
 
 class Config:
@@ -37,20 +89,14 @@ class Config:
     DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
     DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
-    # 将Windows路径转换为SQLite兼容的URL格式
-    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/')
-    import urllib.parse
-    ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
     SQLALCHEMY_DATABASE_URI = (
         os.environ.get('POSTGRES_DATABASE_URL')
         or os.environ.get('DATABASE_URL')
-        or f'sqlite:///{ENCODED_PATH}'
+        or _sqlite_uri_for_path(DATABASE_PATH)
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_ECHO = False
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_pre_ping': True,
-    }
+    SQLALCHEMY_ECHO = _bool_env('SQLALCHEMY_ECHO', False)
+    SQLALCHEMY_ENGINE_OPTIONS = _engine_options_for(SQLALCHEMY_DATABASE_URI)
     
     # CORS配置
     CORS_ORIGINS = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 
@@ -98,7 +144,7 @@ class Config:
 class DevelopmentConfig(Config):
     """开发环境配置"""
     DEBUG = True
-    SQLALCHEMY_ECHO = True
+    SQLALCHEMY_ECHO = _bool_env('SQLALCHEMY_ECHO', False)
 
 
 class ProductionConfig(Config):
@@ -114,14 +160,10 @@ class ProductionConfig(Config):
     DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
     os.makedirs(DATA_DIR, exist_ok=True)  # 确保数据目录存在
     DATABASE_PATH = os.path.abspath(os.path.join(DATA_DIR, 'logistics.db'))
-    # 将Windows路径转换为SQLite兼容的URL格式
-    DATABASE_PATH_FOR_URL = DATABASE_PATH.replace('\\', '/')
-    import urllib.parse
-    ENCODED_PATH = urllib.parse.quote(DATABASE_PATH_FOR_URL, safe='/')
     SQLALCHEMY_DATABASE_URI = (
         os.environ.get('POSTGRES_DATABASE_URL')
         or os.environ.get('DATABASE_URL')
-        or f'sqlite:///{ENCODED_PATH}'
+        or _sqlite_uri_for_path(DATABASE_PATH)
     )
 
 
@@ -146,6 +188,11 @@ class TestingConfig(Config):
     """测试环境配置"""
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    SQLALCHEMY_ENGINE_OPTIONS = {}
+    AMAP_WEB_KEY = ''
+    AMAP_SERVICE_KEY = ''
+    TIANDITU_BROWSER_KEY = ''
+    TIANDITU_SERVER_KEY = ''
 
 
 config = {

@@ -3,6 +3,22 @@
  */
 import request from './request'
 
+const INTERACTIVE_SHADOW_PARAMS = {
+  runtime_profile: 'interactive',
+  scenario_limit: 1,
+  row_limit: 20,
+  anomaly_source_limit: 2000,
+  anomaly_limit: 40,
+  use_ml: false,
+  top_k: 5
+}
+
+const SHADOW_FULL_TIMEOUT = 120000
+
+function shadowRequestConfig(params = {}) {
+  return params.runtime_profile === 'full' ? { timeout: SHADOW_FULL_TIMEOUT } : undefined
+}
+
 /**
  * 自动调度
  * @param {Object} params - 调度参数
@@ -102,6 +118,164 @@ export function compareDispatchSolvers(params = {}) {
     url: '/dispatch/compare-solvers',
     method: 'post',
     data: params
+  })
+}
+
+/**
+ * 获取调度 AI/RL shadow readiness benchmark
+ */
+export function getDispatchShadowBenchmark(params = {}) {
+  return request({
+    url: '/dispatch/shadow-benchmark',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      test_ratio: 0.3,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取调度 shadow benchmark 快照
+ */
+export function getDispatchShadowBenchmarkSnapshot(params = {}) {
+  return request({
+    url: '/dispatch/shadow-benchmark/snapshot',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      test_ratio: 0.3,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取动态重调度 shadow 模拟
+ */
+export function getDispatchRedispatchSimulator(params = {}) {
+  return request({
+    url: '/dispatch/redispatch-simulator',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      delay_minutes: 45,
+      unavailable_vehicle_ratio: 0.1,
+      cost_multiplier: 1.12,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取 RL shadow runner
+ */
+export function getDispatchRlShadowRunner(params = {}) {
+  return request({
+    url: '/dispatch/rl-shadow-runner',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      episode_limit: 50,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取 Fitted-Q shadow model
+ */
+export function getDispatchFittedQShadowModel(params = {}) {
+  return request({
+    url: '/dispatch/fitted-q-shadow-model',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      test_ratio: 0.3,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 创建调度 AI/RL shadow 策略后台任务
+ */
+export function createDispatchPolicyJob(params = {}) {
+  return request({
+    url: '/dispatch/policy/jobs',
+    method: 'post',
+    data: {
+      runtime_profile: 'full',
+      policy_family: 'fitted_q',
+      scenario_limit: 50,
+      row_limit: 200,
+      top_k: 10,
+      use_ml: false,
+      ...params
+    },
+    timeout: 10000
+  })
+}
+
+/**
+ * 查询调度 AI/RL shadow 策略任务
+ */
+export function getDispatchPolicyJob(jobId) {
+  return request({
+    url: `/dispatch/policy/jobs/${jobId}`,
+    method: 'get'
+  })
+}
+
+/**
+ * 获取已落库调度场景学习数据集
+ */
+export function getDispatchLearningDataset(params = {}) {
+  return request({
+    url: '/dispatch/learning-dataset',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取调度 shadow policy scorer
+ */
+export function getDispatchPolicyScorer(params = {}) {
+  return request({
+    url: '/dispatch/policy-scorer',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      ...params
+    },
+    ...shadowRequestConfig(params)
+  })
+}
+
+/**
+ * 获取调度 reward model 基线
+ */
+export function getDispatchRewardModel(params = {}) {
+  return request({
+    url: '/dispatch/reward-model',
+    method: 'get',
+    params: {
+      ...INTERACTIVE_SHADOW_PARAMS,
+      test_ratio: 0.3,
+      ...params
+    },
+    ...shadowRequestConfig(params)
   })
 }
 

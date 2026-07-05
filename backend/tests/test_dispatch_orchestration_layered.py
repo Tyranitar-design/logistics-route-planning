@@ -132,6 +132,7 @@ def test_smart_dispatch_generates_plans_from_shipment_facts(monkeypatch):
             "limit": 10,
             "max_orders_per_vehicle": 2,
             "use_precise_distance": False,
+            "policy_mode": "dqn_shadow",
             "weights": {"cost": 0.4, "time": 0.3, "satisfaction": 0.3},
         },
     )
@@ -155,6 +156,12 @@ def test_smart_dispatch_generates_plans_from_shipment_facts(monkeypatch):
     assert payload["route_truth"]["estimated_leg_count"] == 2
     assert payload["diagnostics"]["order_count"] == 2
     assert payload["ai_shadow"]["mode"] == "shadow"
+    assert payload["policy_mode"] == "dqn_shadow"
+    assert payload["solver_plan"]["hard_constraints_owner"] == "dispatch solver layer"
+    assert payload["constraint_validation"]["passed"] is True
+    assert payload["constraint_validation"]["violation_count"] == 0
+    assert payload["rl_rerank"]["deployable"] is False
+    assert payload["summary"]["ai_policy_deployable"] is False
     assert payload["distance_source"] == "haversine_corrected"
     assert payload["authenticity_level"].startswith("B")
     assert payload["scenario_id"]
@@ -571,6 +578,80 @@ def test_dispatch_fitted_q_shadow_model_trains_offline_approximator(monkeypatch)
     assert payload["truth_contract"]["mutation"] == "none"
     assert payload["truth_contract"]["deployable"] is False
     assert "fitted-Q" in payload["truth_contract"]["fitted_q_shadow_model"]
+
+
+def test_dispatch_fitted_q_shadow_model_degrades_to_200_on_optional_failure(monkeypatch):
+    client, headers, _ = _build_client(monkeypatch)
+
+    import app.routes.dispatch as dispatch_routes
+
+    class BrokenLearningService:
+        def train_fitted_q_shadow_model(self, payload):
+            assert payload["runtime_profile"] == "interactive"
+            assert payload["scenario_limit"] == 1
+            assert payload["row_limit"] == 20
+            assert payload["anomaly_source_limit"] == 2000
+            assert payload["use_ml"] is False
+            raise RuntimeError("unit test fitted-q failure")
+
+    monkeypatch.setattr(
+        dispatch_routes,
+        "get_dispatch_learning_dataset_service",
+        lambda: BrokenLearningService(),
+    )
+
+    response = client.get(
+        "/api/dispatch/fitted-q-shadow-model"
+        "?runtime_profile=interactive&scenario_limit=50&row_limit=100"
+        "&anomaly_source_limit=50000&anomaly_limit=80&use_ml=true",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert payload["provider_status"] == "degraded"
+    assert payload["fallback_reason"].startswith("FITTED-Q-SHADOW-MODEL_DEGRADED")
+    assert payload["runtime_profile"] == "interactive"
+    assert payload["runtime_limits"]["scenario_limit"] == 1
+    assert payload["runtime_limits"]["row_limit"] == 20
+    assert payload["runtime_limits"]["anomaly_source_limit"] == 2000
+    assert payload["runtime_limits"]["use_ml"] is False
+    assert payload["truth_contract"]["mutation"] == "none"
+
+
+def test_dispatch_policy_job_endpoint_accepts_background_shadow_work(monkeypatch):
+    client, headers, _ = _build_client(monkeypatch)
+
+    response = client.post(
+        "/api/dispatch/policy/jobs",
+        headers=headers,
+        json={
+            "runtime_profile": "interactive",
+            "policy_family": "dqn",
+            "scenario_limit": 50,
+            "row_limit": 100,
+            "use_ml": True,
+        },
+    )
+
+    assert response.status_code == 202, response.get_json()
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["provider_status"] == "accepted"
+    assert payload["job_id"] == payload["job"]["job_id"]
+    assert payload["status"] in {"queued", "running"}
+    assert payload["policy_family"] == "dqn"
+    assert payload["runtime_profile"] == "interactive"
+    assert payload["runtime_limits"]["scenario_limit"] == 1
+    assert payload["runtime_limits"]["row_limit"] == 20
+    assert payload["runtime_limits"]["use_ml"] is False
+    assert payload["truth_contract"]["mutation"] == "none"
+
+    status = client.get(payload["poll_url"], headers=headers)
+    assert status.status_code == 200
+    assert status.get_json()["job"]["job_id"] == payload["job"]["job_id"]
+    assert status.get_json()["job_id"] == payload["job"]["job_id"]
 
 
 def test_dispatch_shadow_benchmark_unifies_ai_shadow_scorecard(monkeypatch):

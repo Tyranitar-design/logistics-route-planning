@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pulp import *
 from app.models import db
 from app.models.network import NetworkScenario, NetworkNode, NetworkEdge
+from app.services.gurobi_network_design_service import get_gurobi_network_design_service
 from sqlalchemy import text
 from flask_jwt_extended import get_jwt_identity
 
@@ -50,6 +51,22 @@ def _build_network_truth_contract(
         "authenticity_level": authenticity_level,
         "fallback_reason": fallback_reason,
     }
+
+
+def _int_arg(name, default, minimum, maximum):
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
+def _float_arg(name, default, minimum, maximum):
+    try:
+        value = float(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -803,6 +820,43 @@ def solve_dynamic_location():
         'solve_time': round(solve_time, 3),
         **truth_contract
     })
+
+
+# ============================================================
+# 真实运单网络数据
+# ============================================================
+
+@network_bp.route('/real-shipment-dataset', methods=['GET'])
+@jwt_required()
+def real_shipment_dataset():
+    """Build a bounded customer/facility dataset from real shipment_facts aggregates."""
+    try:
+        payload = {
+            "customer_limit": _int_arg("customer_limit", 12, 3, 12),
+            "candidate_limit": _int_arg("candidate_limit", 6, 1, 8),
+            "transport_cost_per_km": _float_arg("transport_cost_per_km", 2.0, 0.1, 50.0),
+            "max_facilities": _int_arg("max_facilities", 3, 1, 8),
+        }
+        data = get_gurobi_network_design_service().database_dataset_payload(payload)
+        data.update({
+            "generated_at": datetime.now().isoformat(),
+            "provider_status": "ok" if data.get("data_source") == "shipment_fact_od_aggregate" else "degraded",
+        })
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "success": False,
+            "message": str(e),
+            "provider_status": "degraded",
+            "fallback_reason": f"REAL_SHIPMENT_NETWORK_DATASET_FAILED:{e.__class__.__name__}",
+            **_build_network_truth_contract(
+                path_source="shipment_fact_city_od_aggregate",
+                distance_source="haversine_corrected",
+                authenticity_level="C",
+                fallback_reason="real_shipment_network_dataset_failed",
+            ),
+        }), 500
 
 
 # ============================================================

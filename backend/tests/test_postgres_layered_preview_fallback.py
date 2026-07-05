@@ -23,7 +23,7 @@ def _build_test_client(monkeypatch):
         importlib.import_module("app")
 
     from app import create_app
-    from app.models import User, db
+    from app.models import Order, User, db
     from app.models.layered_data import DataImportBatch, ShipmentFact
 
     app = create_app("testing")
@@ -34,6 +34,15 @@ def _build_test_client(monkeypatch):
         user = User(username="admin", real_name="管理员", role="admin", status="active")
         user.password = "admin123"
         db.session.add(user)
+        db.session.add(
+            Order(
+                order_number="LEGACY-1",
+                customer_name="旧演示客户",
+                cargo_name="演示货物",
+                status="pending",
+                created_by=1,
+            )
+        )
         batch = DataImportBatch(
             dataset_source="test",
             source_filename="fixture.csv",
@@ -114,6 +123,42 @@ def test_create_app_can_skip_ml_routes(monkeypatch):
 
     assert "/api/auth/login" in route_rules
     assert "/api/ml/train" not in route_rules
+    assert "/api/advanced-ml/predict/with-anomaly" in route_rules
+
+
+def test_advanced_ml_compat_endpoint_survives_disabled_legacy_ml(monkeypatch):
+    client, _ = _build_test_client(monkeypatch)
+
+    response = client.get("/api/advanced-ml/predict/with-anomaly?days=2&limit=100")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data_source"] == "shipment_fact"
+    assert "prediction" in payload["data"]
+    assert isinstance(payload["data"]["prediction"].get("predictions"), list)
+    assert payload["data"]["truth_contract"]["business_mutation"] == "none"
+
+
+def test_enterprise_summary_route_returns_truth_contract(monkeypatch):
+    client, headers = _build_test_client(monkeypatch)
+
+    response = client.post(
+        "/api/analytics/enterprise-summary",
+        headers=headers,
+        json={"limit": 100, "trend_days": 7, "lane_limit": 5, "anomaly_limit": 5},
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data_source"] == "shipment_fact"
+    assert payload["summary"]["records_scanned"] >= 1
+    assert "prediction" in payload
+    assert "anomaly" in payload
+    assert "capabilities" in payload
+    assert payload["truth_contract"]["primary_source"] == "shipment_facts"
+    assert payload["truth_contract"]["rl_boundary"].startswith("shadow_rerank_only")
 
 
 def test_stats_overview_prefers_layered_shipment_facts(monkeypatch):
@@ -150,3 +195,29 @@ def test_orders_route_falls_back_to_layered_shipment_facts(monkeypatch):
     assert payload["data_source"] == "shipment_fact"
     assert payload["total"] == 2
     assert payload["orders"][0]["order_number"] in {"ORD-1", "ORD-2"}
+
+
+def test_orders_stats_prefers_layered_shipments_when_legacy_orders_exist(monkeypatch):
+    client, headers = _build_test_client(monkeypatch)
+
+    response = client.get("/api/orders/stats", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["data_source"] == "shipment_fact"
+    assert payload["total"] == 2
+    assert payload["pending"] == 1
+    assert payload["delivered"] == 1
+    assert payload["legacy_orders_total"] == 1
+
+
+def test_orders_route_can_explicitly_read_legacy_orders(monkeypatch):
+    client, headers = _build_test_client(monkeypatch)
+
+    response = client.get("/api/orders?data_source=orders&per_page=10&page=1", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["data_source"] == "orders"
+    assert payload["total"] == 1
+    assert payload["shipment_facts_total"] == 2

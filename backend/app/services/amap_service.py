@@ -333,6 +333,49 @@ class AmapService:
             authenticity=self._build_authenticity('地理编码来自高德官方地理编码服务。')
         )
     
+    def place_text_search(self, keywords: str, city: str = None, types: str = None) -> AmapGeocodeResult:
+        """POI 关键词搜索（place/text），返回第一个 POI 坐标。
+
+        用于 geocode 失败的地名（如"大兴安岭"等非常规地址）。
+        """
+        params = {"keywords": keywords, "offset": 1, "page": 1, "extensions": "base"}
+        if city:
+            params["city"] = city
+        if types:
+            params["types"] = types
+        result = self._make_request("place/text", params)
+        if result.get("status") != "1":
+            return AmapGeocodeResult(
+                success=False, provider="amap", provider_status=result.get("provider_status", "degraded"),
+                degraded=True, fallback_reason=result.get("fallback_reason") or result.get("info", "POI 搜索失败"),
+                authenticity=self._build_authenticity("POI 搜索来自高德官方。"),
+                error=result.get("info", "POI 搜索失败"),
+            )
+        pois = result.get("pois", [])
+        if not pois:
+            return AmapGeocodeResult(
+                success=False, provider="amap", provider_status="degraded",
+                degraded=True, fallback_reason="AMAP_POI_EMPTY",
+                authenticity=self._build_authenticity("POI 搜索来自高德官方。"),
+                error="未找到 POI",
+            )
+        poi = pois[0]
+        location = str(poi.get("location", "")).split(",")
+        if len(location) != 2:
+            return AmapGeocodeResult(
+                success=False, provider="amap", provider_status="degraded",
+                degraded=True, fallback_reason="AMAP_POI_LOCATION_INVALID",
+                authenticity=self._build_authenticity("POI 搜索来自高德官方。"),
+                error="POI 坐标解析失败",
+            )
+        return AmapGeocodeResult(
+            success=True, longitude=float(location[0]), latitude=float(location[1]),
+            formatted_address=poi.get("name") or poi.get("address"),
+            province=poi.get("pname"), city=poi.get("cityname"), district=poi.get("adname"),
+            provider="amap", provider_status="ok", degraded=False, fallback_reason=None,
+            authenticity=self._build_authenticity("POI 搜索来自高德官方。"),
+        )
+
     def regeocode(self, longitude: float, latitude: float) -> AmapGeocodeResult:
         """
         逆地理编码 - 坐标转地址

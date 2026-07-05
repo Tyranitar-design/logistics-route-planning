@@ -14,6 +14,18 @@
       </div>
     </div>
 
+    <div class="truth-strip" :class="enterpriseSummary.provider_status || 'degraded'">
+      <span v-for="item in truthItems" :key="item">{{ item }}</span>
+    </div>
+
+    <div class="runtime-strip">
+      <div class="runtime-card" v-for="cap in runtimeCapabilities" :key="cap.id" :class="{ degraded: !cap.available }">
+        <span class="runtime-name">{{ cap.label }}</span>
+        <strong>{{ cap.available ? '可用' : '降级' }}</strong>
+        <small>{{ cap.execution_mode || cap.boundary || cap.fallback_reason }}</small>
+      </div>
+    </div>
+
     <!-- 算法选择卡片 -->
     <div class="algorithm-cards">
       <div 
@@ -173,6 +185,12 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { Cpu, DataAnalysis } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { optimizeRoute, compareAlgorithms, getAlgorithms } from '@/api/advancedRoute'
+import { getEnterpriseSummary } from '@/api/analytics'
+import {
+  emptyEnterpriseSummary,
+  enterpriseTruthItems,
+  normalizeEnterpriseSummary
+} from '@/utils/enterpriseSummary'
 
 // 状态
 const algorithms = ref([])
@@ -183,6 +201,14 @@ const result = ref(null)
 const compareResults = ref(null)
 const bestAlgorithm = ref(null)
 const recommendation = ref('')
+const enterpriseSummary = ref(emptyEnterpriseSummary())
+const truthItems = computed(() => enterpriseTruthItems(enterpriseSummary.value))
+const runtimeCapabilities = computed(() => {
+  const rows = enterpriseSummary.value.capabilities?.capabilities || []
+  return rows
+    .filter(item => ['gurobi', 'cplex_docplex', 'ortools', 'pymoo', 'torch', 'stable_baselines3'].includes(item.id))
+    .slice(0, 6)
+})
 
 // 参数
 const params = reactive({
@@ -206,6 +232,23 @@ const currentAlgo = computed(() =>
   algorithms.value.find(a => a.id === selectedAlgorithm.value)
 )
 
+const loadDecisionContext = async () => {
+  try {
+    const res = await getEnterpriseSummary({
+      runtime_profile: 'interactive',
+      limit: 5000,
+      lane_limit: 10,
+      anomaly_limit: 20
+    })
+    enterpriseSummary.value = normalizeEnterpriseSummary(res)
+  } catch (e) {
+    enterpriseSummary.value = normalizeEnterpriseSummary({
+      ...emptyEnterpriseSummary(),
+      fallback_reason: e?.response?.data?.fallback_reason || e.message || 'ENTERPRISE_SUMMARY_FAILED'
+    })
+  }
+}
+
 // 获取算法列表
 const loadAlgorithms = async () => {
   try {
@@ -224,7 +267,11 @@ const handleOptimize = async () => {
   try {
     const res = await optimizeRoute({
       algorithm: selectedAlgorithm.value,
-      params: params
+      params,
+      context_source: 'shipment_fact_enterprise_summary',
+      policy_boundary: selectedAlgorithm.value === 'drl'
+        ? 'shadow_only_solver_constraints_required'
+        : 'heuristic_route_optimizer'
     })
     
     if (res.success) {
@@ -282,6 +329,7 @@ const getBarHeight = (value) => {
 
 onMounted(() => {
   loadAlgorithms()
+  loadDecisionContext()
 })
 </script>
 
@@ -294,6 +342,69 @@ onMounted(() => {
   color: #fff;
   position: relative;
   overflow-x: hidden;
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.truth-strip span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  background: rgba(0, 212, 255, 0.08);
+  color: rgba(255,255,255,0.82);
+  font-size: 12px;
+}
+
+.truth-strip.degraded span {
+  border-color: rgba(255, 217, 61, 0.24);
+  background: rgba(255, 217, 61, 0.08);
+}
+
+.runtime-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.runtime-card {
+  min-height: 78px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 255, 136, 0.2);
+  background: rgba(0, 255, 136, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.runtime-card.degraded {
+  border-color: rgba(255, 217, 61, 0.24);
+  background: rgba(255, 217, 61, 0.06);
+}
+
+.runtime-name {
+  color: rgba(255,255,255,0.72);
+  font-size: 12px;
+}
+
+.runtime-card strong {
+  color: #fff;
+  font-size: 18px;
+}
+
+.runtime-card small {
+  color: rgba(255,255,255,0.55);
+  line-height: 1.35;
 }
 
 /* 背景效果 */

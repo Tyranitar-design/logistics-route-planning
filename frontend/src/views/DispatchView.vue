@@ -136,6 +136,15 @@
               <div class="config-hint">{{ currentAlgorithm?.description }}</div>
             </el-form-item>
 
+            <el-form-item label="AI策略层">
+              <el-select v-model="dispatchConfig.policy_mode" class="full-select">
+                <el-option label="Solver Only" value="solver_only" />
+                <el-option label="Shadow Rerank" value="shadow_rerank" />
+                <el-option label="DQN Shadow" value="dqn_shadow" />
+              </el-select>
+              <div class="config-hint">AI 只做候选方案评分，硬约束仍由求解器校验</div>
+            </el-form-item>
+
             <el-form-item label="选择车辆">
               <el-select v-model="selectedVehicles" multiple placeholder="默认全部可用车辆" class="full-select">
                 <el-option
@@ -191,6 +200,41 @@
             <el-descriptions-item label="总里程">{{ formatNumber(dispatchSummary.total_distance_km || dispatchSummary.total_distance) }} 公里</el-descriptions-item>
             <el-descriptions-item label="总成本"><span class="cost">{{ formatNumber(dispatchSummary.total_cost) }} 元</span></el-descriptions-item>
           </el-descriptions>
+        </el-card>
+
+        <el-card class="panel-card summary-card" v-if="solverPlan || constraintValidation || rlRerank">
+          <template #header>
+            <div class="card-header">
+              <span>Solver + AI Shadow</span>
+              <el-tag :type="constraintValidation?.passed ? 'success' : 'warning'">
+                {{ constraintValidation?.passed ? '约束通过' : '需复核' }}
+              </el-tag>
+            </div>
+          </template>
+          <div class="policy-grid">
+            <div class="policy-cell">
+              <span>策略模式</span>
+              <strong>{{ dispatchSummary?.policy_mode || dispatchConfig.policy_mode }}</strong>
+            </div>
+            <div class="policy-cell">
+              <span>Solver</span>
+              <strong>{{ solverPlan?.solver || '-' }}</strong>
+            </div>
+            <div class="policy-cell">
+              <span>AI可部署</span>
+              <strong>{{ rlRerank?.deployable ? '是' : '否' }}</strong>
+            </div>
+            <div class="policy-cell">
+              <span>违规数</span>
+              <strong>{{ constraintValidation?.violation_count ?? 0 }}</strong>
+            </div>
+          </div>
+          <el-table v-if="rlCandidates.length" :data="rlCandidates" size="small" max-height="180" class="shadow-table">
+            <el-table-column prop="shadow_rank" label="AI序" width="64" />
+            <el-table-column prop="vehicle_id" label="车辆" width="70" />
+            <el-table-column prop="order_count" label="单数" width="64" />
+            <el-table-column prop="policy_score" label="策略分" />
+          </el-table>
         </el-card>
       </el-col>
 
@@ -263,13 +307,19 @@
       </el-col>
       <el-col :xs="24" :lg="8">
         <el-card class="panel-card">
-          <template #header>AI Shadow</template>
-          <div v-if="aiShadow" class="ai-shadow">
+          <template #header>
+            <div class="card-header">
+              <span>AI Shadow</span>
+              <el-button size="small" @click="handlePolicyJob" :loading="policyJobLoading">后台评估</el-button>
+            </div>
+          </template>
+          <div v-if="aiShadow || policyJobStatus" class="ai-shadow">
             <div class="shadow-score">
               <span>风险分</span>
               <strong>{{ aiShadow.risk_score ?? 0 }}</strong>
             </div>
             <el-tag v-for="model in shadowModels" :key="model" class="shadow-tag">{{ model }}</el-tag>
+            <p v-if="policyJobStatus">后台任务：{{ policyJobStatus }}</p>
             <p v-for="tip in aiShadow.recommendations || []" :key="tip">{{ tip }}</p>
           </div>
           <el-empty v-else description="尚未运行调度" :image-size="70" />
@@ -300,8 +350,10 @@ import {
   applyDispatch,
   compareDispatchSolvers,
   createDispatchWave,
+  createDispatchPolicyJob,
   getAlgorithms,
   getDispatchHealth,
+  getDispatchPolicyJob,
   previewDispatch,
   smartDispatch
 } from '@/api/dispatch'
@@ -316,10 +368,15 @@ const unassignedOrders = ref([])
 const dispatchSummary = ref(null)
 const dispatchDiagnostics = ref(null)
 const aiShadow = ref(null)
+const solverPlan = ref(null)
+const rlRerank = ref(null)
+const constraintValidation = ref(null)
 const solverComparison = ref([])
 const activeScenarioId = ref(null)
 const activeScenarioCode = ref('')
 const activePlan = ref([0])
+const policyJobLoading = ref(false)
+const policyJob = ref(null)
 
 const waveFilters = ref({
   search: '',
@@ -330,6 +387,7 @@ const waveFilters = ref({
 
 const dispatchConfig = ref({
   algorithm: 'balanced',
+  policy_mode: 'solver_only',
   max_orders_per_vehicle: 5,
   use_precise_distance: true,
   consider_weather: true,
@@ -396,6 +454,13 @@ const diagnosticRows = computed(() => {
 const shadowModels = computed(() => {
   const models = aiShadow.value?.models || {}
   return Object.entries(models).map(([key, value]) => `${key}: ${value}`)
+})
+
+const rlCandidates = computed(() => (rlRerank.value?.candidates || []).slice(0, 5))
+const policyJobStatus = computed(() => {
+  const job = policyJob.value?.job || policyJob.value
+  if (!job) return ''
+  return `${job.policy_family || 'shadow'} · ${job.status || 'unknown'}`
 })
 
 onMounted(async () => {
@@ -487,6 +552,9 @@ function applyResult(res) {
   dispatchSummary.value = res.summary || null
   dispatchDiagnostics.value = res.diagnostics || null
   aiShadow.value = res.ai_shadow || null
+  solverPlan.value = res.solver_plan || null
+  rlRerank.value = res.rl_rerank || null
+  constraintValidation.value = res.constraint_validation || null
   activeScenarioId.value = res.scenario_id || null
   activeScenarioCode.value = res.scenario_code || ''
   lastTruth.value = {
@@ -549,6 +617,50 @@ async function handleCompareSolvers() {
     ElMessage.error('求解器对比失败')
   } finally {
     compareLoading.value = false
+  }
+}
+
+async function handlePolicyJob() {
+  policyJobLoading.value = true
+  try {
+    const res = await createDispatchPolicyJob({
+      policy_family: dispatchConfig.value.policy_mode === 'dqn_shadow' ? 'dqn' : 'fitted_q',
+      scenario_id: activeScenarioId.value || undefined,
+      runtime_profile: 'full',
+      scenario_limit: activeScenarioId.value ? 1 : 50,
+      row_limit: activeScenarioId.value ? 50 : 200,
+      top_k: 10,
+      use_ml: false
+    })
+    if (res.success) {
+      policyJob.value = res.job
+      ElMessage.success('AI Shadow 后台任务已创建')
+      setTimeout(() => pollPolicyJob(res.job?.job_id), 1200)
+    } else {
+      ElMessage.warning(res.fallback_reason || 'AI Shadow 后台任务创建失败')
+    }
+  } catch (error) {
+    ElMessage.error('AI Shadow 后台任务创建失败')
+  } finally {
+    policyJobLoading.value = false
+  }
+}
+
+async function pollPolicyJob(jobId) {
+  if (!jobId) return
+  try {
+    const res = await getDispatchPolicyJob(jobId)
+    if (res.success) {
+      policyJob.value = res.job
+      const status = res.job?.status
+      if (status && !['completed', 'failed'].includes(status)) {
+        setTimeout(() => pollPolicyJob(jobId), 1600)
+      } else if (status === 'completed') {
+        ElMessage.success('AI Shadow 后台任务完成')
+      }
+    }
+  } catch (error) {
+    console.warn('轮询 AI Shadow 任务失败:', error)
   }
 }
 
@@ -819,6 +931,36 @@ function percent(value) {
 .cost {
   color: #e6a23c;
   font-weight: 700;
+}
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.policy-cell {
+  padding: 10px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.policy-cell span {
+  display: block;
+  color: #7b8da0;
+  font-size: 12px;
+}
+
+.policy-cell strong {
+  display: block;
+  margin-top: 4px;
+  color: #263445;
+}
+
+.shadow-table {
+  margin-top: 8px;
 }
 
 .result-card {

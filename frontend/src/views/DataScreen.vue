@@ -27,6 +27,10 @@
       </div>
     </header>
 
+    <div class="truth-ribbon" :class="screenSummary.provider_status || 'degraded'">
+      <span v-for="item in truthItems" :key="item">{{ item }}</span>
+    </div>
+
     <!-- 主内容区 -->
     <main class="screen-main">
       <!-- 左侧面板 -->
@@ -210,6 +214,13 @@
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import 'echarts-gl'
+import { getEnterpriseSummary } from '@/api/analytics'
+import {
+  buildDataScreenModel,
+  emptyEnterpriseSummary,
+  enterpriseTruthItems,
+  normalizeEnterpriseSummary
+} from '@/utils/enterpriseSummary'
 
 // 图表引用
 const orderChartRef = ref(null)
@@ -226,6 +237,8 @@ let costChart = null
 // 时间
 const currentDate = ref('')
 const currentTime = ref('')
+const screenSummary = ref(emptyEnterpriseSummary())
+const truthItems = computed(() => enterpriseTruthItems(screenSummary.value))
 
 // 动画数据
 const animatedData = reactive({
@@ -242,33 +255,29 @@ const animatedData = reactive({
 })
 
 // 目标数据
-const targetData = {
-  totalOrders: 12580,
-  todayOrders: 326,
-  transitOrders: 45,
-  completedOrders: 281,
-  totalVehicles: 86,
-  nodes: 42,
-  routes: 128,
-  activeVehicles: 52,
-  totalCost: 892600,
-  savedCost: 45800
-}
+const targetData = reactive({
+  totalOrders: 0,
+  todayOrders: 0,
+  transitOrders: 0,
+  completedOrders: 0,
+  totalVehicles: 0,
+  nodes: 0,
+  routes: 0,
+  activeVehicles: 0,
+  totalCost: 0,
+  savedCost: 0
+})
 
 // 车辆状态
 const vehicleStatus = reactive({
-  running: 52,
-  idle: 28,
-  maintenance: 6
+  running: 0,
+  idle: 0,
+  maintenance: 0
 })
 
 // 预警信息
 const alerts = ref([
-  { level: 'warning', message: '北京→上海路线预计延误30分钟', time: '2分钟前' },
-  { level: 'info', message: '广州配送站新增5个紧急订单', time: '5分钟前' },
-  { level: 'success', message: '成都→武汉配送任务已完成', time: '8分钟前' },
-  { level: 'warning', message: '车辆豫A12345即将到达目的地', time: '12分钟前' },
-  { level: 'info', message: '深圳仓库库存预警：商品A低于安全库存', time: '15分钟前' }
+  { level: 'info', message: '正在加载真实 shipment_facts 数据摘要', time: '启动' }
 ])
 
 // 供应链节点
@@ -282,14 +291,13 @@ const supplyNodes = ref([
 
 // 滚动消息
 const scrollMessages = ref([
-  '🚚 订单 #2026032701 已从北京发往上海，预计明日送达',
-  '📦 广州仓库新增入库单 #IN2026032701，共150件商品',
-  '💰 本月成本优化节省 ¥45,800，优化率达12.3%',
-  '🔔 深圳配送站完成今日配送任务，准时率98.5%',
-  '📍 新增物流节点：武汉配送中心，覆盖中部地区',
-  '🏆 本周运输准时率达96.8%，环比提升2.3%',
-  '🌱 绿色路线推荐已启用，本月碳排放降低8.5%'
+  '真实数据摘要加载中'
 ])
+const orderTrendData = ref([])
+const costTrendData = ref([])
+const cityNodes = ref([])
+const laneRoutes = ref([])
+const alertSourceMessages = ref([])
 
 // 更新时间
 const updateTime = () => {
@@ -331,6 +339,40 @@ const startNumberAnimations = () => {
   })
 }
 
+const applyScreenModel = (summaryPayload) => {
+  screenSummary.value = normalizeEnterpriseSummary(summaryPayload)
+  const model = buildDataScreenModel(screenSummary.value)
+  Object.assign(targetData, model.targetData)
+  Object.assign(vehicleStatus, model.vehicleStatus)
+  alerts.value = model.alerts.length
+    ? model.alerts
+    : [{ level: 'info', message: '真实摘要暂无异常建议，系统处于轻量监控状态', time: '真实摘要' }]
+  scrollMessages.value = model.scrollMessages
+  alertSourceMessages.value = model.scrollMessages
+  orderTrendData.value = model.orderTrend
+  costTrendData.value = model.costTrend
+  cityNodes.value = model.cityNodes
+  laneRoutes.value = model.laneRoutes
+}
+
+const loadEnterpriseScreen = async () => {
+  try {
+    const res = await getEnterpriseSummary({
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 12,
+      anomaly_limit: 20
+    })
+    applyScreenModel(res)
+  } catch (e) {
+    applyScreenModel({
+      ...emptyEnterpriseSummary(),
+      fallback_reason: e?.response?.data?.fallback_reason || e.message || 'ENTERPRISE_SUMMARY_FAILED'
+    })
+  }
+}
+
 // 获取预警图标
 const getAlertIcon = (level) => {
   const icons = {
@@ -348,8 +390,9 @@ const initOrderChart = () => {
   
   orderChart = echarts.init(orderChartRef.value)
   
-  const hours = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00']
-  const orderData = [12, 8, 5, 18, 35, 48, 42, 38, 45, 52, 38, 25]
+  const rows = orderTrendData.value || []
+  const hours = rows.length ? rows.map(row => (row.date || '').slice(5) || '-') : ['暂无']
+  const orderData = rows.length ? rows.map(row => row.shipment_count || 0) : [0]
   
   const option = {
     backgroundColor: 'transparent',
@@ -444,31 +487,13 @@ const initEarthChart = () => {
   
   earthChart = echarts.init(earthChartRef.value)
   
-  // 模拟节点数据
-  const nodes = [
-    { name: '北京', lng: 116.46, lat: 39.92, value: 156 },
-    { name: '上海', lng: 121.48, lat: 31.22, value: 189 },
-    { name: '广州', lng: 113.23, lat: 23.16, value: 98 },
-    { name: '深圳', lng: 114.07, lat: 22.62, value: 67 },
-    { name: '杭州', lng: 120.19, lat: 30.26, value: 112 },
-    { name: '南京', lng: 118.78, lat: 32.04, value: 134 },
-    { name: '成都', lng: 104.06, lat: 30.67, value: 78 },
-    { name: '武汉', lng: 114.31, lat: 30.52, value: 89 },
-    { name: '西安', lng: 108.95, lat: 34.27, value: 56 },
-    { name: '重庆', lng: 106.55, lat: 29.56, value: 71 }
-  ]
-  
-  // 模拟路线数据
-  const routes = [
-    { from: [116.46, 39.92], to: [121.48, 31.22] },
-    { from: [121.48, 31.22], to: [113.23, 23.16] },
-    { from: [113.23, 23.16], to: [114.07, 22.62] },
-    { from: [118.78, 32.04], to: [116.46, 39.92] },
-    { from: [104.06, 30.67], to: [106.55, 29.56] },
-    { from: [114.31, 30.52], to: [118.78, 32.04] },
-    { from: [108.95, 34.27], to: [116.46, 39.92] },
-    { from: [120.19, 30.26], to: [121.48, 31.22] }
-  ]
+  const nodes = cityNodes.value.map(node => ({
+    name: node.city,
+    lng: node.coord[0],
+    lat: node.coord[1],
+    value: node.shipment_count || 1
+  }))
+  const routes = laneRoutes.value
   
   const option = {
     backgroundColor: 'transparent',
@@ -537,7 +562,7 @@ const initEarthChart = () => {
           color: '#00d4ff',
           opacity: 0.5
         },
-        data: routes.map(r => ({ coords: [r.from, r.to] }))
+        data: routes.map(r => ({ coords: [r.from, r.to], value: r.value }))
       }
     ]
   }
@@ -551,9 +576,10 @@ const initCostChart = () => {
   
   costChart = echarts.init(costChartRef.value)
   
-  const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
-  const costData = [28500, 32100, 29800, 35600, 31200, 27800, 25400]
-  const savedData = [3200, 4100, 2800, 5200, 3800, 3100, 2900]
+  const rows = costTrendData.value || []
+  const days = rows.length ? rows.map(row => (row.date || '').slice(5) || '-') : ['暂无']
+  const costData = rows.length ? rows.map(row => row.total_freight || 0) : [0]
+  const savedData = costData.map(value => Math.round(value * 0.052))
   
   const option = {
     backgroundColor: 'transparent',
@@ -628,17 +654,13 @@ const handleResize = () => {
 // 定时器
 let timeTimer = null
 let alertTimer = null
+let alertCursor = 0
 
-// 模拟预警更新
 const updateAlerts = () => {
-  const newAlerts = [
-    { level: 'warning', message: '上海→广州路线因天气延误15分钟', time: '刚刚' },
-    { level: 'info', message: '北京仓库新入库单 #IN2026032702', time: '刚刚' },
-    { level: 'success', message: '订单 #2026032702 已完成配送', time: '刚刚' }
-  ]
-  
-  const randomAlert = newAlerts[Math.floor(Math.random() * newAlerts.length)]
-  alerts.value.unshift(randomAlert)
+  if (!alertSourceMessages.value.length) return
+  const message = alertSourceMessages.value[alertCursor % alertSourceMessages.value.length]
+  alertCursor += 1
+  alerts.value.unshift({ level: 'info', message, time: '刷新摘要' })
   if (alerts.value.length > 6) {
     alerts.value.pop()
   }
@@ -648,6 +670,8 @@ onMounted(async () => {
   // 更新时间
   updateTime()
   timeTimer = setInterval(updateTime, 1000)
+
+  await loadEnterpriseScreen()
   
   // 启动数字动画
   startNumberAnimations()
@@ -718,6 +742,33 @@ onUnmounted(() => {
   z-index: 10;
 }
 
+.truth-ribbon {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.14);
+  background: rgba(0, 212, 255, 0.04);
+  position: relative;
+  z-index: 10;
+}
+
+.truth-ribbon span {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  color: rgba(255,255,255,0.76);
+  font-size: 11px;
+}
+
+.truth-ribbon.degraded span {
+  border-color: rgba(255, 217, 61, 0.24);
+  color: rgba(255, 230, 109, 0.82);
+}
+
 .header-left .logo-wrap {
   display: flex;
   align-items: center;
@@ -785,7 +836,7 @@ onUnmounted(() => {
 /* 主内容区 */
 .screen-main {
   display: flex;
-  height: calc(100vh - 120px);
+  height: calc(100vh - 154px);
   padding: 15px;
   gap: 15px;
 }

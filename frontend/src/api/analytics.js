@@ -14,6 +14,59 @@ export function getDashboard() {
 }
 
 /**
+ * 真实 shipment_facts 运营/成本总览
+ */
+export function getOperationsSummary(params = {}) {
+  return request({
+    url: '/analytics/operations-summary',
+    method: 'post',
+    data: {
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 8,
+      ...params
+    }
+  })
+}
+
+/**
+ * 真实 shipment_facts 运营 readiness scorecard
+ */
+export function getOperationsScorecard(params = {}) {
+  return request({
+    url: '/analytics/operations-scorecard',
+    method: 'post',
+    data: {
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 8,
+      ...params
+    }
+  })
+}
+
+/**
+ * 企业级真实数据摘要，供分析总览/成本/风险/大屏等页面共用
+ */
+export function getEnterpriseSummary(params = {}) {
+  return request({
+    url: '/analytics/enterprise-summary',
+    method: 'post',
+    data: {
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 10,
+      horizon_days: 7,
+      anomaly_limit: 20,
+      ...params
+    }
+  })
+}
+
+/**
  * 获取趋势分析
  * @param {Object} params - 参数
  * @param {string} params.start_date - 开始日期

@@ -4,10 +4,15 @@
     <header class="screen-header">
       <h1>📊 物流大数据实时分析平台</h1>
       <div class="header-info">
-        <span>Kafka: {{ kafkaStatus ? '✅ 已连接' : '❌ 未连接' }}</span>
+        <span>Kafka: {{ kafkaStatus ? '已连接' : '可选降级' }}</span>
+        <span>{{ providerText }}</span>
         <span>{{ currentTime }}</span>
       </div>
     </header>
+
+    <div class="truth-strip" :class="enterpriseSummary.provider_status || 'degraded'">
+      <span v-for="item in truthItems" :key="item">{{ item }}</span>
+    </div>
 
     <!-- 主内容 -->
     <main class="screen-main">
@@ -107,9 +112,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import request from '@/api/request'
+import { getEnterpriseSummary } from '@/api/analytics'
+import {
+  buildBigDataModel,
+  emptyEnterpriseSummary,
+  enterpriseTruthItems,
+  normalizeEnterpriseSummary
+} from '@/utils/enterpriseSummary'
 
 // 图表引用
 const orderChartRef = ref(null)
@@ -124,6 +136,9 @@ let trendChart = null
 // 状态
 const currentTime = ref('')
 const kafkaStatus = ref(false)
+const enterpriseSummary = ref(emptyEnterpriseSummary())
+const truthItems = computed(() => enterpriseTruthItems(enterpriseSummary.value))
+const providerText = computed(() => enterpriseSummary.value.provider_status === 'ok' ? 'shipment_facts 在线' : '真实摘要降级')
 const stats = reactive({
   totalOrders: 0,
   todayOrders: 0,
@@ -136,6 +151,39 @@ const recentLogs = ref([])
 const demandPredictions = ref([])
 const vehicleSuggestions = ref([])
 const bottlenecks = ref([])
+
+const applyEnterpriseBigData = (summaryPayload) => {
+  enterpriseSummary.value = normalizeEnterpriseSummary(summaryPayload)
+  const model = buildBigDataModel(enterpriseSummary.value)
+  Object.assign(stats, model.stats)
+  updateCharts(model.chartData)
+  demandPredictions.value = model.demandPredictions
+  vehicleSuggestions.value = model.vehicleSuggestions
+  bottlenecks.value = model.bottlenecks
+  kafkaStatus.value = false
+  addLog(
+    enterpriseSummary.value.provider_status === 'ok' ? 'success' : 'warning',
+    `真实摘要刷新: ${stats.totalOrders} 条运单，${enterpriseSummary.value.provider_status || 'degraded'}`
+  )
+}
+
+const fetchEnterpriseSummary = async () => {
+  try {
+    const res = await getEnterpriseSummary({
+      runtime_profile: 'interactive',
+      limit: 5000,
+      trend_days: 30,
+      lane_limit: 12,
+      anomaly_limit: 20
+    })
+    applyEnterpriseBigData(res)
+  } catch (e) {
+    applyEnterpriseBigData({
+      ...emptyEnterpriseSummary(),
+      fallback_reason: e?.response?.data?.fallback_reason || e.message || 'ENTERPRISE_SUMMARY_FAILED'
+    })
+  }
+}
 
 // 格式化数字
 const formatNumber = (num) => {
@@ -150,29 +198,7 @@ const updateTime = () => {
 
 // 获取大数据
 const fetchData = async () => {
-  try {
-    const res = await request.get('/bigdata/dashboard')
-    if (res.success) {
-      const data = res.data
-      
-      // 更新统计（字段映射）
-      stats.totalOrders = data.summary.total_orders || 0
-      stats.todayOrders = data.summary.today_orders || 0
-      stats.totalVehicles = data.summary.total_vehicles || 0
-      stats.totalCost = data.summary.total_cost || 0
-      
-      // 更新图表
-      updateCharts(data)
-      
-      // 添加日志
-      addLog('info', `数据更新: 订单${data.summary.total_orders}个, 车辆${data.summary.total_vehicles}辆`)
-      
-      // Kafka 状态
-      kafkaStatus.value = data.kafka?.connected || false
-    }
-  } catch (e) {
-    addLog('error', '获取数据失败: ' + e.message)
-  }
+  await fetchEnterpriseSummary()
 }
 
 // 获取 Spark 分析数据
@@ -215,7 +241,8 @@ const fetchSparkData = async () => {
       }).sort((a, b) => b.avg_demand - a.avg_demand).slice(0, 5)
     }
   } catch (e) {
-    console.error('Spark data fetch error:', e)
+    addLog('warning', 'Spark 可选分析不可用，使用真实摘要生成轻量建议')
+    await fetchEnterpriseSummary()
   }
 }
 
@@ -311,9 +338,13 @@ const updateCharts = (data) => {
   }
 
   if (trendChart && data.orders?.weekly_trend) {
+    const rows = data.orders.weekly_trend || []
     trendChart.setOption({
+      xAxis: {
+        data: rows.map(d => (d.date || d.bucket || '').slice(5) || '-')
+      },
       series: [{
-        data: data.orders.weekly_trend.map(d => d.count)
+        data: rows.map(d => d.count || d.shipment_count || 0)
       }]
     })
   }
@@ -427,6 +458,27 @@ onUnmounted(() => {
   gap: 20px;
   font-size: 14px;
   color: rgba(255,255,255,0.7);
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.truth-strip span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  background: rgba(0, 212, 255, 0.08);
+  color: rgba(255,255,255,0.82);
+  font-size: 12px;
+}
+
+.truth-strip.degraded span {
+  border-color: rgba(255, 217, 61, 0.24);
+  background: rgba(255, 217, 61, 0.08);
 }
 
 .metrics-row {

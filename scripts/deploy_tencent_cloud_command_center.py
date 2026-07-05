@@ -143,6 +143,7 @@ def create_archive() -> Path:
         "miniprogram",
         "docs",
         "scripts",
+        "案例一：食品供应链仓配优化(1)",
         "docker-compose.prod.yml",
         "README.md",
     ]
@@ -189,24 +190,29 @@ def create_database_dump() -> Path:
 
 
 class Remote:
-    def __init__(self, host: str, user: str, password: str):
+    def __init__(self, host: str, user: str, password: str | None = None, identity_file: Path | None = None):
         self.host = host
         self.user = user
         self.password = password
+        self.identity_file = identity_file
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     def connect(self) -> None:
-        self.client.connect(
-            self.host,
-            username=self.user,
-            password=self.password,
-            timeout=20,
-            banner_timeout=20,
-            auth_timeout=20,
-            look_for_keys=False,
-            allow_agent=False,
-        )
+        kwargs: dict[str, Any] = {
+            "hostname": self.host,
+            "username": self.user,
+            "timeout": 20,
+            "banner_timeout": 20,
+            "auth_timeout": 20,
+            "look_for_keys": False,
+            "allow_agent": False,
+        }
+        if self.identity_file:
+            kwargs["key_filename"] = str(self.identity_file)
+        else:
+            kwargs["password"] = self.password
+        self.client.connect(**kwargs)
 
     def close(self) -> None:
         self.client.close()
@@ -214,9 +220,12 @@ class Remote:
     def run(self, command: str, *, sudo: bool = False, timeout: int = 120, check: bool = True) -> str:
         wrapped = f"bash -lc {shlex.quote(command)}"
         if sudo:
-            wrapped = f"sudo -S -p '' bash -lc {shlex.quote(command)}"
+            if self.password:
+                wrapped = f"sudo -S -p '' bash -lc {shlex.quote(command)}"
+            else:
+                wrapped = f"sudo -n bash -lc {shlex.quote(command)}"
         stdin, stdout, stderr = self.client.exec_command(wrapped, get_pty=False, timeout=timeout)
-        if sudo:
+        if sudo and self.password:
             stdin.write(self.password + "\n")
             stdin.flush()
         out = stdout.read().decode("utf-8", errors="replace")
@@ -245,6 +254,8 @@ def build_env_file() -> str:
         "TIANAPI_KEY": local_env.get("TIANAPI_KEY", ""),
         "TIANDITU_BROWSER_KEY": local_env.get("TIANDITU_BROWSER_KEY", ""),
         "TIANDITU_SERVER_KEY": local_env.get("TIANDITU_SERVER_KEY", ""),
+        "VITE_AMAP_KEY": local_env.get("VITE_AMAP_KEY") or local_env.get("AMAP_WEB_KEY", ""),
+        "VITE_AMAP_SECURITY_KEY": local_env.get("VITE_AMAP_SECURITY_KEY", ""),
     }
     return "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
 
@@ -413,6 +424,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--user", default=DEFAULT_USER)
+    parser.add_argument("--identity-file", help="SSH private key path. When set, the remote user must have NOPASSWD sudo.")
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--skip-dump", action="store_true")
@@ -420,7 +432,9 @@ def main() -> int:
     args = parser.parse_args()
 
     socket.setdefaulttimeout(20)
-    remote = Remote(args.host, args.user, parse_password(CREDS_FILE))
+    identity_file = Path(args.identity_file).expanduser() if args.identity_file else None
+    password = None if identity_file else parse_password(CREDS_FILE)
+    remote = Remote(args.host, args.user, password=password, identity_file=identity_file)
     try:
         remote.connect()
         check_remote(remote)

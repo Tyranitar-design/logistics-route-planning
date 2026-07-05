@@ -4,7 +4,7 @@
 数据统计路由
 """
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 from datetime import datetime, timedelta
 from sqlalchemy import func
@@ -14,8 +14,14 @@ from app.models.layered_data import ShipmentFact
 stats_bp = Blueprint('stats', __name__)
 
 
-def _has_layered_shipments() -> bool:
-    return Order.query.count() == 0 and ShipmentFact.query.count() > 0
+def _prefer_layered_shipments() -> bool:
+    source = (request.args.get('data_source') or 'auto').strip().lower()
+    if source in {'orders', 'legacy', 'legacy_orders'}:
+        return False
+    fact_total = ShipmentFact.query.count()
+    if source in {'shipment_fact', 'shipment_facts', 'facts', 'fact'}:
+        return fact_total > 0
+    return fact_total > 0
 
 
 def _get_latest_layered_shipment_date():
@@ -32,7 +38,7 @@ def _get_latest_layered_shipment_date():
 def get_overview():
     """获取总览统计数据"""
     try:
-        if _has_layered_shipments():
+        if _prefer_layered_shipments():
             total_orders = ShipmentFact.query.count()
             total_nodes = Node.query.count()
             total_routes = Route.query.count()
@@ -108,7 +114,7 @@ def get_order_trend():
     try:
         trend_data = []
 
-        if _has_layered_shipments():
+        if _prefer_layered_shipments():
             latest_date = _get_latest_layered_shipment_date() or datetime.utcnow().date()
             for i in range(6, -1, -1):
                 date = latest_date - timedelta(days=i)
@@ -148,7 +154,7 @@ def get_order_trend():
 def get_order_distribution():
     """获取订单状态分布"""
     try:
-        if _has_layered_shipments():
+        if _prefer_layered_shipments():
             distribution = db.session.query(
                 ShipmentFact.standard_status,
                 func.count(ShipmentFact.id).label('count')

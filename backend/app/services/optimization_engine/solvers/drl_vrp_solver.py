@@ -16,7 +16,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 import time
 
-from ..optimization_engine.base import (
+from ..base import (
     OptimizationSolver,
     OptimizationProblem,
     OptimizationResult,
@@ -88,7 +88,8 @@ class DRLVRPSolver(OptimizationSolver):
     
     def _build_model(self):
         """构建 Pointer Network 模型"""
-        
+        outer_torch = self.torch
+
         class Encoder(self.nn.Module):
             def __init__(self, input_dim, hidden_dim):
                 super().__init__()
@@ -110,7 +111,7 @@ class DRLVRPSolver(OptimizationSolver):
             def forward(self, decoder_state, encoder_outputs):
                 score = self.V(self.F.tanh(self.W1(decoder_state) + self.W2(encoder_outputs)))
                 attention_weights = self.F.softmax(score, dim=1)
-                context = torch.sum(attention_weights * encoder_outputs, dim=1)
+                context = outer_torch.sum(attention_weights * encoder_outputs, dim=1)
                 return context, attention_weights
         
         class Decoder(self.nn.Module):
@@ -371,7 +372,7 @@ class DRLVRPSolver(OptimizationSolver):
 
 
 # 注册求解器
-from ..optimization_engine.base import SolverRegistry
+from ..base import SolverRegistry
 
 try:
     @SolverRegistry.register(SolverType.DRL_VRP)

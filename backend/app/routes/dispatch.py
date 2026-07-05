@@ -4,7 +4,11 @@
 智能调度路由
 """
 
-from flask import Blueprint, request, jsonify
+import threading
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from flask import Blueprint, current_app, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services.dispatch_service import get_dispatch_service
 from app.services.smart_dispatch_service import get_smart_dispatch_service
@@ -13,6 +17,8 @@ from app.services.dispatch_learning_dataset_service import get_dispatch_learning
 from app.utils.rate_limiter import rate_limit, RateLimits
 
 dispatch_bp = Blueprint('dispatch', __name__)
+_POLICY_JOBS = {}
+_POLICY_JOB_LOCK = threading.Lock()
 
 
 SMART_DISPATCH_TRUTH_CONTRACT = {
@@ -33,6 +39,233 @@ def _current_user_id():
         return int(identity) if identity is not None else None
     except Exception:
         return None
+
+
+def _coerce_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_profile(payload=None, default="interactive"):
+    value = (payload or {}).get("runtime_profile") or request.args.get("runtime_profile") or default
+    return "full" if str(value).lower() == "full" else "interactive"
+
+
+def _apply_shadow_runtime_profile(payload=None, default="interactive"):
+    payload = dict(payload or {})
+    profile = _runtime_profile(payload, default=default)
+    payload["runtime_profile"] = profile
+    if profile == "interactive":
+        payload["scenario_limit"] = max(1, min(1, _coerce_int(payload.get("scenario_limit"), 1)))
+        payload["row_limit"] = max(1, min(20, _coerce_int(payload.get("row_limit"), 20)))
+        payload["anomaly_source_limit"] = max(1, min(2000, _coerce_int(payload.get("anomaly_source_limit"), 2000)))
+        payload["anomaly_limit"] = max(1, min(40, _coerce_int(payload.get("anomaly_limit"), 20)))
+        if payload.get("top_k") is not None:
+            payload["top_k"] = max(1, min(5, _coerce_int(payload.get("top_k"), 3)))
+        payload["use_ml"] = False
+    else:
+        payload["scenario_limit"] = max(1, _coerce_int(payload.get("scenario_limit"), 50))
+        payload["row_limit"] = max(1, _coerce_int(payload.get("row_limit"), 200))
+        payload["anomaly_source_limit"] = max(1, _coerce_int(payload.get("anomaly_source_limit"), 50000))
+        payload["anomaly_limit"] = max(1, _coerce_int(payload.get("anomaly_limit"), 80))
+        payload["top_k"] = max(1, _coerce_int(payload.get("top_k"), 10))
+        payload["use_ml"] = _coerce_bool(payload.get("use_ml"), default=False)
+    return payload
+
+
+def _attach_shadow_runtime(result, payload):
+    if isinstance(result, dict):
+        result.setdefault("runtime_profile", payload.get("runtime_profile", "interactive"))
+        result.setdefault(
+            "runtime_limits",
+            {
+                "scenario_limit": payload.get("scenario_limit"),
+                "row_limit": payload.get("row_limit"),
+                "anomaly_source_limit": payload.get("anomaly_source_limit"),
+                "anomaly_limit": payload.get("anomaly_limit"),
+                "top_k": payload.get("top_k"),
+                "use_ml": payload.get("use_ml"),
+            },
+        )
+    return result
+
+
+def _degraded_shadow_payload(endpoint, payload, exc):
+    current_app.logger.exception("optional dispatch shadow endpoint degraded: %s", endpoint)
+    return {
+        "success": False,
+        "provider_status": "degraded",
+        "fallback_reason": f"{endpoint.upper()}_DEGRADED:{type(exc).__name__}",
+        "runtime_profile": payload.get("runtime_profile", "interactive"),
+        "runtime_limits": {
+            "scenario_limit": payload.get("scenario_limit"),
+            "row_limit": payload.get("row_limit"),
+            "anomaly_source_limit": payload.get("anomaly_source_limit"),
+            "anomaly_limit": payload.get("anomaly_limit"),
+            "top_k": payload.get("top_k"),
+            "use_ml": payload.get("use_ml"),
+        },
+        "summary": {},
+        "recommendations": [
+            "高级 AI shadow 已降级；请先确认 dispatch_scenarios/assignments 存在，再手动运行 full 模式。",
+        ],
+        "truth_contract": {
+            "mutation": "none",
+            "deployable": False,
+            "shadow_boundary": "optional shadow endpoint degraded without mutating business data",
+        },
+    }
+
+
+def _shadow_response(endpoint, raw_payload, runner):
+    payload = _apply_shadow_runtime_profile(raw_payload)
+    try:
+        result = runner(payload)
+        return jsonify(_attach_shadow_runtime(result, payload)), 200
+    except Exception as exc:
+        return jsonify(_degraded_shadow_payload(endpoint, payload, exc)), 200
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _policy_job_summary(job):
+    return {
+        'job_id': job.get('job_id'),
+        'status': job.get('status'),
+        'policy_family': job.get('policy_family'),
+        'runtime_profile': job.get('runtime_profile'),
+        'provider_status': job.get('provider_status'),
+        'fallback_reason': job.get('fallback_reason'),
+        'progress': job.get('progress', 0.0),
+        'created_at': job.get('created_at'),
+        'updated_at': job.get('updated_at'),
+        'completed_at': job.get('completed_at'),
+    }
+
+
+def _update_policy_job(job_id, **updates):
+    with _POLICY_JOB_LOCK:
+        job = _POLICY_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job['updated_at'] = _utc_now()
+
+
+def _run_policy_job(job_id, payload, app):
+    def run_inside_context():
+        _update_policy_job(job_id, status='running', provider_status='running', progress=0.1)
+        try:
+            family = str(payload.get('policy_family') or payload.get('model_family') or 'fitted_q').lower()
+            service = get_dispatch_learning_dataset_service()
+            if family in {'dqn', 'dql', 'ppo', 'rl_shadow', 'q_shadow'}:
+                result = service.run_rl_shadow_runner(payload)
+            elif family in {'fitted_q', 'fitted-q', 'fitted_q_shadow'}:
+                result = service.train_fitted_q_shadow_model(payload)
+            else:
+                result = service.build_shadow_benchmark_report(payload)
+            _update_policy_job(
+                job_id,
+                status='completed',
+                provider_status=result.get('provider_status', 'ok' if result.get('success') else 'degraded'),
+                fallback_reason=result.get('fallback_reason'),
+                progress=1.0,
+                result=result,
+                completed_at=_utc_now(),
+            )
+        except Exception as exc:  # pragma: no cover - defensive background boundary
+            current_app.logger.exception("dispatch policy job failed: %s", job_id)
+            _update_policy_job(
+                job_id,
+                status='failed',
+                provider_status='degraded',
+                fallback_reason=f"DISPATCH_POLICY_JOB_FAILED:{type(exc).__name__}",
+                progress=1.0,
+                error=str(exc),
+                completed_at=_utc_now(),
+            )
+
+    with app.app_context():
+        run_inside_context()
+
+
+def _create_policy_job(payload):
+    safe_payload = _apply_shadow_runtime_profile(payload, default='full')
+    job_id = f"dispatch-policy-{uuid4().hex[:12]}"
+    created_at = _utc_now()
+    job = {
+        'job_id': job_id,
+        'status': 'queued',
+        'policy_family': safe_payload.get('policy_family') or safe_payload.get('model_family') or 'fitted_q',
+        'runtime_profile': safe_payload.get('runtime_profile'),
+        'provider_status': 'queued',
+        'fallback_reason': None,
+        'progress': 0.0,
+        'created_at': created_at,
+        'updated_at': created_at,
+        'request': {
+            key: safe_payload.get(key)
+            for key in (
+                'policy_family',
+                'model_family',
+                'runtime_profile',
+                'scenario_id',
+                'scenario_limit',
+                'row_limit',
+                'top_k',
+                'test_ratio',
+                'use_ml',
+            )
+            if key in safe_payload
+        },
+        'truth_contract': {
+            'mutation': 'none',
+            'deployable': False,
+            'hard_constraints_owner': 'dispatch solver layer',
+            'job_boundary': 'background shadow policy job only',
+        },
+    }
+    with _POLICY_JOB_LOCK:
+        _POLICY_JOBS[job_id] = job
+    thread = threading.Thread(
+        target=_run_policy_job,
+        args=(job_id, safe_payload, current_app._get_current_object()),
+        name=f"dispatch-policy-job-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {
+        'success': True,
+        'provider_status': 'accepted',
+        'fallback_reason': None,
+        'job_id': job_id,
+        'status': job['status'],
+        'policy_family': job['policy_family'],
+        'runtime_profile': job['runtime_profile'],
+        'job': _policy_job_summary(job),
+        'poll_url': f"/api/dispatch/policy/jobs/{job_id}",
+        'runtime_limits': {
+            'scenario_limit': safe_payload.get('scenario_limit'),
+            'row_limit': safe_payload.get('row_limit'),
+            'anomaly_source_limit': safe_payload.get('anomaly_source_limit'),
+            'anomaly_limit': safe_payload.get('anomaly_limit'),
+            'top_k': safe_payload.get('top_k'),
+            'use_ml': safe_payload.get('use_ml'),
+        },
+        'truth_contract': job['truth_contract'],
+    }
 
 
 def _normalize_smart_dispatch_summary(summary, plans, unassigned_orders):
@@ -293,9 +526,10 @@ def dispatch_learning_dataset():
                 'status': request.args.get('status'),
                 'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
             }
+        payload = _apply_shadow_runtime_profile(payload)
         service = get_dispatch_learning_dataset_service()
         result = service.build_dataset(payload)
-        return jsonify(result)
+        return jsonify(_attach_shadow_runtime(result, payload))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -317,9 +551,10 @@ def dispatch_policy_scorer():
                 'status': request.args.get('status'),
                 'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
             }
+        payload = _apply_shadow_runtime_profile(payload)
         service = get_dispatch_learning_dataset_service()
         result = service.score_policies(payload)
-        return jsonify(result)
+        return jsonify(_attach_shadow_runtime(result, payload))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -328,231 +563,263 @@ def dispatch_policy_scorer():
 @jwt_required()
 def dispatch_reward_model():
     """Train/evaluate a lightweight offline shadow reward model."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 50, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.train_reward_model(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 50, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'reward-model',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().train_reward_model(safe_payload),
+    )
 
 
 @dispatch_bp.route('/redispatch-simulator', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_redispatch_simulator():
     """Run a read-only dynamic re-dispatch shadow simulation."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'delay_minutes': request.args.get('delay_minutes', 45, type=float),
-                'delay_vehicle_ids': request.args.get('delay_vehicle_ids'),
-                'unavailable_vehicle_ids': request.args.get('unavailable_vehicle_ids'),
-                'cost_multiplier': request.args.get('cost_multiplier', 1.12, type=float),
-                'provider_degradation': request.args.get('provider_degradation', 'true').lower() != 'false',
-                'reliability_drop': request.args.get('reliability_drop', 0.25, type=float),
-                'priority_order_refs': request.args.get('priority_order_refs'),
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.simulate_redispatch(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'delay_minutes': request.args.get('delay_minutes', 45, type=float),
+            'delay_vehicle_ids': request.args.get('delay_vehicle_ids'),
+            'unavailable_vehicle_ids': request.args.get('unavailable_vehicle_ids'),
+            'cost_multiplier': request.args.get('cost_multiplier', 1.12, type=float),
+            'provider_degradation': request.args.get('provider_degradation', 'true').lower() != 'false',
+            'reliability_drop': request.args.get('reliability_drop', 0.25, type=float),
+            'priority_order_refs': request.args.get('priority_order_refs'),
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'redispatch-simulator',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().simulate_redispatch(safe_payload),
+    )
 
 
 @dispatch_bp.route('/redispatch-profiles', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_redispatch_profiles():
     """Generate redispatch simulator profiles from real anomaly signals."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.build_redispatch_profiles(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'redispatch-profiles',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().build_redispatch_profiles(safe_payload),
+    )
 
 
 @dispatch_bp.route('/redispatch-scenario-generator', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_redispatch_scenario_generator():
     """Generate read-only historical disruption scenarios for shadow replay."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.build_redispatch_scenario_generator(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'redispatch-scenario-generator',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().build_redispatch_scenario_generator(safe_payload),
+    )
 
 
 @dispatch_bp.route('/rl-shadow-runner', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_rl_shadow_runner():
     """Run an offline RL-style shadow benchmark over redispatch episodes."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.run_rl_shadow_runner(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'rl-shadow-runner',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().run_rl_shadow_runner(safe_payload),
+    )
 
 
 @dispatch_bp.route('/fitted-q-shadow-model', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_fitted_q_shadow_model():
     """Train/evaluate an offline fitted-Q shadow model over redispatch episodes."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.train_fitted_q_shadow_model(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'fitted-q-shadow-model',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().train_fitted_q_shadow_model(safe_payload),
+    )
 
 
 @dispatch_bp.route('/shadow-benchmark', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_shadow_benchmark():
     """Return a unified dispatch AI/RL shadow readiness scorecard."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.build_shadow_benchmark_report(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'shadow-benchmark',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().build_shadow_benchmark_report(safe_payload),
+    )
 
 
 @dispatch_bp.route('/shadow-benchmark/snapshot', methods=['GET', 'POST'])
 @jwt_required()
 def dispatch_shadow_benchmark_snapshot():
     """Export a non-persistent dispatch AI/RL shadow benchmark snapshot."""
-    try:
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-        else:
-            payload = {
-                'scenario_id': request.args.get('scenario_id', type=int),
-                'scenario_ids': request.args.get('scenario_ids'),
-                'scenario_limit': request.args.get('scenario_limit', 1, type=int),
-                'row_limit': request.args.get('row_limit', 200, type=int),
-                'top_k': request.args.get('top_k', 10, type=int),
-                'test_ratio': request.args.get('test_ratio', 0.3, type=float),
-                'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
-                'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
-                'tasks': request.args.get('tasks'),
-                'city': request.args.get('city') or request.args.get('destination_city'),
-                'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
-                'status': request.args.get('status'),
-                'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
-            }
-        service = get_dispatch_learning_dataset_service()
-        result = service.export_shadow_benchmark_snapshot(payload)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = {
+            'scenario_id': request.args.get('scenario_id', type=int),
+            'scenario_ids': request.args.get('scenario_ids'),
+            'scenario_limit': request.args.get('scenario_limit', 1, type=int),
+            'row_limit': request.args.get('row_limit', 200, type=int),
+            'top_k': request.args.get('top_k', 10, type=int),
+            'test_ratio': request.args.get('test_ratio', 0.3, type=float),
+            'anomaly_source_limit': request.args.get('anomaly_source_limit', 50000, type=int),
+            'anomaly_limit': request.args.get('anomaly_limit', 80, type=int),
+            'tasks': request.args.get('tasks'),
+            'city': request.args.get('city') or request.args.get('destination_city'),
+            'use_ml': request.args.get('use_ml', 'false').lower() == 'true',
+            'status': request.args.get('status'),
+            'include_preview': request.args.get('include_preview', 'true').lower() != 'false',
+        }
+    return _shadow_response(
+        'shadow-benchmark-snapshot',
+        payload,
+        lambda safe_payload: get_dispatch_learning_dataset_service().export_shadow_benchmark_snapshot(safe_payload),
+    )
+
+
+@dispatch_bp.route('/policy/jobs', methods=['POST'])
+@jwt_required()
+def create_dispatch_policy_job():
+    """Create a non-blocking dispatch AI/RL shadow policy job."""
+    payload = request.get_json(silent=True) or {}
+    result = _create_policy_job(payload)
+    return jsonify(result), 202 if result.get('success') else 400
+
+
+@dispatch_bp.route('/policy/jobs/<job_id>', methods=['GET'])
+@jwt_required()
+def get_dispatch_policy_job(job_id):
+    """Return a dispatch policy shadow job status."""
+    with _POLICY_JOB_LOCK:
+        job = dict(_POLICY_JOBS.get(job_id) or {})
+    if not job:
+        return jsonify({
+            'success': False,
+            'provider_status': 'degraded',
+            'fallback_reason': 'DISPATCH_POLICY_JOB_NOT_FOUND',
+            'job_id': job_id,
+        }), 404
+    return jsonify({
+        'success': True,
+        'provider_status': job.get('provider_status', 'unknown'),
+        'fallback_reason': job.get('fallback_reason'),
+        'job_id': job.get('job_id'),
+        'status': job.get('status'),
+        'policy_family': job.get('policy_family'),
+        'runtime_profile': job.get('runtime_profile'),
+        'progress': job.get('progress', 0.0),
+        'job': job,
+        'truth_contract': job.get('truth_contract') or {
+            'mutation': 'none',
+            'deployable': False,
+            'hard_constraints_owner': 'dispatch solver layer',
+        },
+    })
 
 
 @dispatch_bp.route('/smart', methods=['POST'])
@@ -606,6 +873,7 @@ def smart_dispatch():
                 'consider_weather': consider_weather,
                 'consider_traffic': consider_traffic,
                 'algorithm': algorithm,
+                'policy_mode': data.get('policy_mode', 'solver_only'),
                 'limit': data.get('limit', data.get('per_page', 100)),
                 'max_orders_per_vehicle': data.get('max_orders_per_vehicle', 5),
                 'use_precise_distance': data.get('use_precise_distance', True),

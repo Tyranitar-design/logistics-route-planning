@@ -4,10 +4,14 @@ Flask 应用入口 - 支持 WebSocket
 import os
 import sys
 import socket
+from dotenv import load_dotenv
 
 # 把项目根目录加入模块搜索路径
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
+
+# 本机敏感配置入口：backend/.env.local 已被 .gitignore 忽略，优先用于 key/密码。
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env.local"), override=True)
 
 # 预解析 DNS（修复 eventlet worker DNS 问题）
 for hostname in ['restapi.amap.com', 'webapi.amap.com']:
@@ -19,6 +23,10 @@ for hostname in ['restapi.amap.com', 'webapi.amap.com']:
 from app import create_app
 from app.services.websocket_service import init_socketio, start_background_push, stop_background_push
 from app.routes.websocket import register_socketio_events
+
+
+def _env_enabled(name):
+    return os.getenv(name, "").lower() in ("1", "true", "yes", "on")
 
 # 创建应用实例（gunicorn 需要这个）
 config_name = os.getenv("FLASK_CONFIG", "development")
@@ -46,9 +54,12 @@ if __name__ == "__main__":
     # 启动后台推送线程
     start_background_push()
     
-    # 启动 Kafka 消费者
-    from app.services.kafka_consumer_service import init_kafka_consumer
-    init_kafka_consumer(socketio)
+    # 启动 Kafka 消费者；本地核心链路冒烟可关闭，避免未启动 Kafka 时刷 NoBrokersAvailable。
+    if _env_enabled("DISABLE_KAFKA_CONSUMER"):
+        print("[Kafka] Consumer disabled by DISABLE_KAFKA_CONSUMER")
+    else:
+        from app.services.kafka_consumer_service import init_kafka_consumer
+        init_kafka_consumer(socketio)
     
     try:
         # 使用 SocketIO 运行（支持 WebSocket）

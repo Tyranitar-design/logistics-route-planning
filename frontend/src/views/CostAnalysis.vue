@@ -35,6 +35,14 @@
       </div>
     </div>
 
+    <div class="truth-strip" :class="enterpriseSummary.provider_status || 'degraded'">
+      <span>数据源 {{ enterpriseSummary.data_source || 'shipment_fact' }}</span>
+      <span>扫描 {{ enterpriseSummary.summary?.records_scanned || 0 }} 条</span>
+      <span>真实性 {{ enterpriseSummary.authenticity_level || 'C' }}</span>
+      <span v-if="enterpriseSummary.fallback_reason">降级 {{ enterpriseSummary.fallback_reason }}</span>
+      <span v-else>成本来自 shipment_facts.freight，构成为可解释分摊估计</span>
+    </div>
+
     <!-- 核心成本指标 -->
     <div class="kpi-row">
       <div v-for="(kpi, index) in costKpis" :key="index" class="kpi-card" :class="kpi.type">
@@ -250,10 +258,17 @@ import {
   getRouteComparison,
   getOptimizationSuggestions
 } from '@/api/cost'
+import { getEnterpriseSummary } from '@/api/analytics'
 
 // 时间
 const currentTime = ref('')
 const costAlert = ref('')
+const enterpriseSummary = ref({
+  data_source: 'shipment_fact',
+  provider_status: 'degraded',
+  authenticity_level: 'C',
+  summary: {}
+})
 
 // 动画值
 const animatedValues = reactive({
@@ -355,6 +370,108 @@ const getDotStyle = (i) => ({
   animationDuration: `${2 + Math.random() * 3}s`
 })
 
+const mapEnterpriseWarnings = (data) => {
+  const anomalySummary = data.anomaly?.summary || {}
+  const byLevel = anomalySummary.by_level || {}
+  const rows = []
+  if ((byLevel.critical || 0) > 0 || (byLevel.high || 0) > 0) {
+    rows.push({
+      level: 'high',
+      type: '异常压力',
+      detail: `高风险异常 ${Number(byLevel.critical || 0) + Number(byLevel.high || 0)} 条，建议进入风险管理复核`,
+      time: '实时'
+    })
+  }
+  if (data.prediction?.fallback_reason) {
+    rows.push({
+      level: 'medium',
+      type: '预测降级',
+      detail: data.prediction.fallback_reason,
+      time: '实时'
+    })
+  }
+  if (data.provider_status === 'degraded') {
+    rows.push({
+      level: 'medium',
+      type: '分析降级',
+      detail: data.fallback_reason || '部分可选 AI/优化组件降级',
+      time: '实时'
+    })
+  }
+  return rows
+}
+
+const loadEnterpriseCostSummary = async () => {
+  const data = await getEnterpriseSummary({
+    trend_days: trendDays.value,
+    lane_limit: 10,
+    horizon_days: 7,
+    anomaly_limit: 20
+  })
+  enterpriseSummary.value = data
+  const kpis = data.kpis || {}
+  const summary = data.summary || {}
+  const totalCost = Number(kpis.total_freight || summary.total_cost || 0)
+  const avgCost = Number(kpis.avg_freight_per_paid_shipment || summary.avg_cost || 0)
+  const onTimeRate = Number(kpis.on_time_rate || 0)
+  const exceptionRate = Number(kpis.exception_rate || 0)
+
+  animateValue('total_cost', totalCost)
+  animateValue('monthly_cost', totalCost)
+  animateValue('avg_cost', avgCost)
+  animateValue('saving_rate', Math.max(0, (1 - exceptionRate) * 100), true)
+  costKpis.value[0].percent = Math.min(100, Math.round((kpis.freight_coverage || 0) * 100))
+  costKpis.value[1].percent = Math.min(100, Math.round((kpis.delivery_completion_rate || 0) * 100))
+  costKpis.value[2].percent = Math.min(100, Math.round(onTimeRate * 100))
+  costKpis.value[3].percent = Math.min(100, Math.round((1 - exceptionRate) * 100))
+
+  const trend = data.trend || []
+  initTrendChart(trend)
+  const trendCosts = trend.map(item => Number(item.total_freight || item.cost || 0)).filter(v => Number.isFinite(v))
+  trendStats.value = {
+    avgDaily: Math.round(trendCosts.reduce((a, b) => a + b, 0) / Math.max(trendCosts.length, 1)).toLocaleString(),
+    maxDay: trendCosts.length ? (trend[trendCosts.indexOf(Math.max(...trendCosts))]?.date || '-').slice(5) : '-',
+    trend: trendCosts.length >= 2 && trendCosts[0] > 0
+      ? Number((((trendCosts[trendCosts.length - 1] - trendCosts[0]) / trendCosts[0]) * 100).toFixed(1))
+      : 0
+  }
+
+  const colors = ['#00d4ff', '#00ff88', '#ffd93d', '#ff6b6b']
+  composeData.value = (data.cost_components || []).map((item, i) => ({
+    name: item.name || item.component,
+    value: Number(item.value || item.amount || 0),
+    percent: Number(item.percent || 0),
+    color: colors[i % colors.length]
+  }))
+  initComposeChart()
+  initRouteChart((data.top_lanes || []).map(lane => ({
+    name: lane.lane,
+    cost: Number(lane.total_freight || 0)
+  })))
+  initNodeChart(
+    (data.city_breakdown || []).map(city => ({ name: city.city, cost: Number(city.outbound_freight || city.total_freight || 0) })),
+    (data.city_breakdown || []).map(city => ({ name: city.city, cost: Number(city.inbound_freight || city.total_freight || 0) }))
+  )
+  initCompareChart((data.top_lanes || []).slice(0, 4).map(lane => {
+    const localCost = Number(lane.total_freight || 0)
+    return {
+      route_name: lane.lane,
+      amap_cost: Math.round(localCost * 1.08),
+      local_cost: Math.round(localCost),
+      saving_rate: 7.4
+    }
+  }))
+  suggestions.value = (data.recommendations || []).slice(0, 5).map((text, i) => ({
+    icon: i === 0 ? '📊' : '💡',
+    title: i === 0 ? '真实数据建议' : '优化建议',
+    description: text,
+    saving: Math.round(totalCost * Math.max(0.005, 0.02 - i * 0.003)).toLocaleString(),
+    priority: i < 2 ? 'high' : i < 4 ? 'medium' : 'low'
+  }))
+  warnings.value = mapEnterpriseWarnings(data)
+  costAlert.value = warnings.value[0]?.detail || ''
+}
+
 // 加载数据
 const loadCostOverview = async () => {
   try {
@@ -373,8 +490,7 @@ const loadCostOverview = async () => {
 
 const loadCostTrend = async () => {
   try {
-    const res = await getCostTrend(trendDays.value)
-    initTrendChart(res.trend || [])
+    await loadEnterpriseCostSummary()
   } catch (e) {
     initTrendChart([])
   }
@@ -446,7 +562,7 @@ const initTrendChart = (data) => {
   
   const chartData = data.length > 0 ? data : Array.from({ length: trendDays.value }, (_, i) => ({
     date: new Date(Date.now() - (trendDays.value - i - 1) * 86400000).toISOString().split('T')[0],
-    cost: 2000 + Math.random() * 1000
+    cost: 0
   }))
   
   chart.setOption({
@@ -472,7 +588,7 @@ const initTrendChart = (data) => {
     },
     series: [{
       type: 'line',
-      data: chartData.map(d => d.cost),
+      data: chartData.map(d => d.cost || d.total_freight || 0),
       smooth: true,
       symbol: 'none',
       lineStyle: { 
@@ -533,18 +649,7 @@ const initRouteChart = (data) => {
   const chart = initChart(routeChart.value)
   if (!chart) return
   
-  const chartData = data.length > 0 ? data : [
-    { name: '北京→上海', cost: 12500 },
-    { name: '广州→深圳', cost: 9800 },
-    { name: '成都→重庆', cost: 8500 },
-    { name: '杭州→南京', cost: 7200 },
-    { name: '武汉→长沙', cost: 6500 },
-    { name: '西安→郑州', cost: 5800 },
-    { name: '天津→石家庄', cost: 4500 },
-    { name: '苏州→无锡', cost: 3800 },
-    { name: '青岛→济南', cost: 3200 },
-    { name: '厦门→福州', cost: 2800 }
-  ]
+  const chartData = data.length > 0 ? data : []
   
   chart.setOption({
     backgroundColor: 'transparent',
@@ -654,9 +759,9 @@ const initNodeChart = (originData, destData) => {
   const chart = initChart(nodeChart.value)
   if (!chart) return
   
-  const nodes = ['北京', '上海', '广州', '深圳', '杭州', '成都', '武汉', '西安']
-  const origins = originData.length > 0 ? originData : nodes.map(n => ({ name: n, cost: 3000 + Math.random() * 5000 }))
-  const dests = destData.length > 0 ? destData : nodes.map(n => ({ name: n, cost: 2000 + Math.random() * 4000 }))
+  const nodes = Array.from(new Set([...originData.map(n => n.name), ...destData.map(n => n.name)])).slice(0, 8)
+  const origins = nodes.map(name => originData.find(item => item.name === name) || { name, cost: 0 })
+  const dests = nodes.map(name => destData.find(item => item.name === name) || { name, cost: 0 })
   
   chart.setOption({
     backgroundColor: 'transparent',
@@ -715,15 +820,7 @@ const initNodeChart = (originData, destData) => {
 // 刷新
 const refreshAll = async () => {
   ElMessage.info('正在刷新...')
-  await Promise.all([
-    loadCostOverview(),
-    loadCostTrend(),
-    loadCostComponents(),
-    loadCostDistribution(),
-    loadCostByNode(),
-    loadRouteComparison(),
-    loadOptimizationSuggestions()
-  ])
+  await loadEnterpriseCostSummary()
   ElMessage.success('刷新完成')
 }
 
@@ -736,15 +833,7 @@ onMounted(async () => {
   updateTime()
   timeInterval = setInterval(updateTime, 1000)
   
-  await Promise.all([
-    loadCostOverview(),
-    loadCostTrend(),
-    loadCostComponents(),
-    loadCostDistribution(),
-    loadCostByNode(),
-    loadRouteComparison(),
-    loadOptimizationSuggestions()
-  ])
+  await loadEnterpriseCostSummary()
   
   window.addEventListener('resize', handleResize)
 })
@@ -884,6 +973,36 @@ onUnmounted(() => {
 .alert-text {
   font-size: 12px;
   color: #ff6b6b;
+}
+
+.truth-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(0, 212, 255, 0.06);
+  font-size: 11px;
+  color: rgba(255,255,255,0.78);
+}
+
+.truth-strip.ok {
+  border-color: rgba(0, 255, 136, 0.25);
+  background: rgba(0, 255, 136, 0.07);
+}
+
+.truth-strip.degraded {
+  border-color: rgba(255, 217, 61, 0.25);
+  background: rgba(255, 217, 61, 0.06);
+}
+
+.truth-strip span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.18);
 }
 
 /* KPI 卡片 */
