@@ -48,6 +48,7 @@ EXCLUDE_DIRS = {
     ".pytest_cache",
     ".playwright-mcp",
     "__pycache__",
+    ".venv",
     "node_modules",
     "dist",
     "venv",
