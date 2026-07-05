@@ -96,9 +96,21 @@ Use `--skip-dump` when the server already has the correct PostgreSQL/PostGIS pro
 
 The deployment script does not print secrets. Keep `.env.production`, SSH private keys, API keys, database passwords, and license files outside Git.
 
+Production deployment on 2026-07-05:
+
+- Remote host: `122.152.220.116`
+- Remote release directory: `/opt/logistics-route-system`
+- Backend/frontend containers: recreated and healthy
+- Data counts: `shipment_facts=50000`, `raw_logistics_shipment_records=50000`, `nodes=21`, `routes=306`, `vehicles=2`
+- IP smoke: `http://122.152.220.116/api/ready` returned PostgreSQL + `registered_capabilities.missing=[]`
+- Food case smoke: summary/network/page/dispatch page all returned 200
+- Dispatch smoke: `dispatch-fresh` returned `assigned_orders=8`, `animation.frame_count=136`, `authenticity_level=B`
+- Auth dispatch smoke: `/api/dispatch/health` and `/api/dispatch/preview` worked after login
+
 ## Remaining Non-Blocking Warnings
 
 - Frontend build still reports legacy glyphicons runtime paths.
 - Frontend CSS minification still reports old `*zoom` syntax.
 - Some chunks are larger than 500 kB and can be split in a later performance pass.
 - Several AI endpoints intentionally return degraded readiness when trained models or long historical time windows are not available.
+- `https://logistics-demo-yu.top` currently has an expired certificate (`2026-07-01`). `certbot renew --cert-name logistics-demo-yu.top` failed because ACME validation reached a DNSPod `webblock.html` response. The app is deployed and passes IP/curl smoke, but formal HTTPS demo requires fixing domain/ACME validation first.

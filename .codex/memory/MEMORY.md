@@ -75,6 +75,16 @@ AI/RL 边界：
 
 ## 4. 已落地能力快照
 
+### 2026-07-05 稳定展示版已发布到 GitHub/Tencent Cloud
+
+- GitHub：`codex/command-center-layout-dashboard-shell` 已推送到 `origin`；发布提交包含 `1c22118 feat: 发布稳定展示版物流指挥中枢` 和发布包修复 `7972ecd fix: 精简腾讯云发布包排除虚拟环境`。
+- Tencent Cloud：使用 Paramiko + pem 私钥部署到 `122.152.220.116`，远端目录 `/opt/logistics-route-system`；本次 `--skip-dump`，保留生产 PostgreSQL。
+- 远端 verify：后端/前端容器 healthy；`shipment_facts=50000`、`raw_logistics_shipment_records=50000`、`nodes=21`、`routes=306`、`vehicles=2`；后端健康、登录、前端静态页均 200。
+- 生产 IP 冒烟：`http://122.152.220.116/api/ready` 返回 PostgreSQL + `shipment_facts=50000` + `registered_capabilities.missing=[]`；食品案例 summary/network/page/dispatch page 均 200；`dispatch-fresh` 返回 8 单、136 帧、B 级混合高德路线；登录后 `/api/dispatch/health` 和 `/api/dispatch/preview` 均正常。
+- 当前生产降级：runtime capabilities 提示 `PYTHON_INTERPRETER_NOT_PROJECT_VENV`、`MINIMAX_API_KEY_MISSING`；GIS provider 提示 `GEOSPATIAL_STACK_UNAVAILABLE`。这些是可解释降级，不是接口缺失。
+- 当前公网阻塞：`https://logistics-demo-yu.top` 证书已于 `2026-07-01` 过期；`certbot renew --cert-name logistics-demo-yu.top` 因 ACME 校验命中 DNSPod `webblock.html` 失败。正式演示前需要先处理域名/备案/解析或 ACME 校验通路，再续证。临时可用 IP HTTP 或 `curl -k` 仅用于技术验证。
+- 发布脚本注意：必须排除 `.venv`，否则 release 包会打入本地虚拟环境导致部署长时间静默；脚本已修复。
+
 ### 2026-07-05 稳定展示版发布前验证
 
 - 发布前本地完整验证已完成：`/api/ready` 显示 PostgreSQL + `shipment_facts=50000` + `registered_capabilities.missing=[]`；食品案例测试 `48 passed`；运行态/Agent/GIS/可选能力测试 `20 passed`；AI/调度/成本核心测试 `41 passed`；OpenSpec `refactor-food-supply-case-console` strict 通过；`frontend npm run build` 通过；HTTP harness `44 total / 40 ok / 4 auth_required / 0 route_missing / 0 failed`。

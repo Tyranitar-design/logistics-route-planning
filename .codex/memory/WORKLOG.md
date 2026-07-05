@@ -3,6 +3,21 @@
 Workspace: `C:\tmp\logistics-route-command-center-layout-dashboard-shell`
 Last updated: 2026-07-05
 
+## 2026-07-05 - 稳定展示版 GitHub/Tencent Cloud 发布完成（小C）
+
+- GitHub 发布：当前分支 `codex/command-center-layout-dashboard-shell` 已推送到 `origin`，稳定展示版主提交为 `1c22118 feat: 发布稳定展示版物流指挥中枢`，后续修复提交 `7972ecd fix: 精简腾讯云发布包排除虚拟环境`。
+- 部署脚本修复：`scripts/deploy_tencent_cloud_command_center.py` 原先排除了 `venv` 但未排除 `.venv`，导致首次发布包打入本地虚拟环境并长时间静默；已补 `.venv` 到 `EXCLUDE_DIRS`，最终发布包约 `34.9 MB`。
+- 腾讯云部署：使用 pem 私钥通过 Paramiko 发布到 `122.152.220.116`，远端 release 目录 `/opt/logistics-route-system`；本次使用 `--skip-dump`，保留服务器 PostgreSQL 数据。
+- 远端部署 verify 通过：后端/前端容器重新创建并 healthy；`shipment_facts=50000`、`raw_logistics_shipment_records=50000`、`nodes=21`、`routes=306`、`vehicles=2`；后端 `/api/health` 200；登录接口可返回 token；前端容器和宿主 Nginx 均返回 200。
+- 生产 HTTP/IP 冒烟通过：
+  - `http://122.152.220.116/api/ready`：`database_runtime.backend=postgresql`、`shipment_facts=50000`、`registered_capabilities.missing=[]`。
+  - `/api/cases/food-supply/summary`、`/network`、`/cases/food-supply`、`/cases/food-supply/dispatch` 均 200。
+  - `/api/cases/food-supply/optimize/dispatch-fresh`：`success=true`、`assigned_orders=8`、`animation.frame_count=136`、`distance_source=mixed_amap_route_matrix`、`path_source=mixed_amap_polyline_estimated_geometry`、`authenticity_level=B`。
+  - 登录后 `/api/dispatch/health`：`data_source=shipment_fact`、`dispatchable_orders=200`、`provider_status=ok`；`/api/dispatch/preview`：`plans=2`、`assigned_orders=10`、`unassigned_orders=10`、`deployable=true`。
+- 当前生产降级事实：`/api/runtime/capabilities?solver_probe=0` 仍提示 `PYTHON_INTERPRETER_NOT_PROJECT_VENV` 与 `MINIMAX_API_KEY_MISSING`；`/api/gis/provider-health` 提示 `GEOSPATIAL_STACK_UNAVAILABLE`，但接口有明确降级原因，不是 404/500。
+- 当前公网阻塞：`https://logistics-demo-yu.top` 证书已于 `2026-07-01` 过期。服务器 `certbot renew --cert-name logistics-demo-yu.top` 失败，Let’s Encrypt 校验时命中 DNSPod `webblock.html`，需先处理域名/备案/解析或 ACME 校验通路后再续证。临时验证可用 `http://122.152.220.116` 或 `curl -k https://logistics-demo-yu.top`，正式演示前应修复 HTTPS。
+- 安全纪律：本轮未读取或输出 pem 内容、API key、数据库密码、JWT token、Gurobi license；提交前 staged secret scan clean，未提交 `.env.production`、`.env.development`、`.env.local`、pem、license、`backend/.venv`、`dist` 或 `node_modules`。
+
 ## 2026-07-05 - 稳定展示版发布前验证与部署收束（小C）
 
 - 目标：把当前 Vue 单前端 + Flask + PostgreSQL/PostGIS + 食品供应链仓配优化案例收束为可发布到 Tencent Cloud/GitHub 的稳定展示版。
